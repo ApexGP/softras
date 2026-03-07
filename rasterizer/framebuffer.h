@@ -28,14 +28,14 @@ public:
         std::fill(depthBuf.begin(), depthBuf.end(), depth);
     }
 
-    // 深度测试：若 z 小于当前深度则通过，并更新深度缓冲
-    // 返回 true 表示通过（更新了深度），false 表示被遮挡
-    bool depthTest(int x, int y, float z)
+    // 深度测试：若 z 小于当前深度则通过
+    // write=true（默认）时同时更新深度缓冲；write=false 时仅测试（适合半透明渲染）
+    bool depthTest(int x, int y, float z, bool write = true)
     {
         if (x < 0 || x >= width || y < 0 || y >= height) return false;
         float &cur = depthBuf[index(x, y)];
         if (z < cur) {
-            cur = z;
+            if (write) cur = z;
             return true;
         }
         return false;

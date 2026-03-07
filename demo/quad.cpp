@@ -7,6 +7,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <vector>
 
 #include "../rasterizer/framebuffer.h"
@@ -53,12 +54,13 @@ static vec4 shaderEffect(vec2 uv_centered, float time)
     return color;
 }
 
-int main()
+int main(int argc, char *argv[])
 {
     const int kWidth = 16 * 120;  // 1920
     const int kHeight = 9 * 120;  // 1080
-    const int kFrames = 60 * 3;   // 180 帧
     const float kFPS = 60.f;
+    const int kSeconds = (argc > 1) ? std::atoi(argv[1]) : 3;
+    const int kFrames = kSeconds * static_cast<int>(kFPS);
     const float kAspect = static_cast<float>(kWidth) / static_cast<float>(kHeight);
 
     // ── 全屏 quad 顶点（两个三角形，CCW）────────
@@ -103,8 +105,9 @@ int main()
 
         std::snprintf(buf, sizeof(buf), "assets/quad/frame-%02d.ppm", frame);
         fb.savePPM(buf);
-        std::printf("quad frame %d/%d\n", frame + 1, kFrames);
+        std::printf("quad frame %d/%d\r", frame + 1, kFrames);
+        std::fflush(stdout);
     }
-
+    std::printf("\n");
     return 0;
 }

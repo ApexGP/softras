@@ -87,6 +87,39 @@ inline float edgeFunc(float ax, float ay, float bx, float by, float px, float py
     return (bx - ax) * (py - ay) - (by - ay) * (px - ax);
 }
 
+// Sutherland-Hodgman 单平面裁剪
+// 平面方程：a*x + b*y + c*z + d*w >= 0 为内侧
+// 要求 V 是 standard-layout 且第一字段为 vec4 clipPos
+template <typename V>
+std::vector<V> clipPolygonAgainstPlane(const std::vector<V> &poly, float a, float b, float c,
+                                       float d)
+{
+    std::vector<V> out;
+    out.reserve(poly.size() + 1);
+    const size_t n = poly.size();
+    for (size_t i = 0; i < n; ++i) {
+        const V &curr = poly[i];
+        const V &next = poly[(i + 1) % n];
+        const vec4 &cc = *reinterpret_cast<const vec4 *>(&curr);
+        const vec4 &cn = *reinterpret_cast<const vec4 *>(&next);
+        float dc = a * cc.x + b * cc.y + c * cc.z + d * cc.w;
+        float dn = a * cn.x + b * cn.y + c * cn.z + d * cn.w;
+        if (dc >= 0.f) out.push_back(curr);
+        if ((dc >= 0.f) != (dn >= 0.f)) {
+            // 交点：线性插值所有 float 字段
+            float t = dc / (dc - dn);
+            constexpr size_t N = sizeof(V) / sizeof(float);
+            V interp{};
+            const float *fc = reinterpret_cast<const float *>(&curr);
+            const float *fn = reinterpret_cast<const float *>(&next);
+            float *fi = reinterpret_cast<float *>(&interp);
+            for (size_t k = 0; k < N; ++k) fi[k] = fc[k] + t * (fn[k] - fc[k]);
+            out.push_back(interp);
+        }
+    }
+    return out;
+}
+
 }  // namespace detail
 
 // ─────────────────────────────────────────────
@@ -199,6 +232,8 @@ struct TriangleData {
     float dNdcZdx, dNdcZdy, ndcZStart;
     // inside 测试方向：invArea<0 时 inside ⟺ 所有 ei≤0
     bool insideNeg;
+    // 线框模式：各边屏幕空间长度（用于边距离计算）
+    float edgeLen01, edgeLen12, edgeLen20;
 };
 
 // ─────────────────────────────────────────────
@@ -215,6 +250,15 @@ public:
     bool cullBackFace = true;
     // 深度测试开关（默认开启）
     bool depthTestEnabled = true;
+    // 深度写入开关（默认开启；关闭时仅测试不写入，适合半透明渲染）
+    bool depthWriteEnabled = true;
+    // 线框渲染模式（默认关闭；开启时仅绘制边缘像素）
+    bool wireframe = false;
+    // 线框宽度（单位：像素，默认 1）
+    float wireframeWidth = 1.0f;
+    // Alpha Blending：src_over 合成 dst = src·α + dst·(1-α)（默认关闭）
+    // 注意：正确的半透明渲染需要从后往前排序，管线不自动排序
+    bool blendEnabled = false;
     // 并行线程数（0 或 1 为单线程，>1 按行分块并行）
     // 默认取硬件核心数的一半，避免占满 CPU
     unsigned int threadCount = std::max(1u, std::thread::hardware_concurrency() / 2);
@@ -251,81 +295,95 @@ public:
 
         size_t triCount = indices.size() / 3;
         for (size_t t = 0; t < triCount; ++t) {
-            const Varying &va = varyings[indices[t * 3 + 0]];
-            const Varying &vb = varyings[indices[t * 3 + 1]];
-            const Varying &vc = varyings[indices[t * 3 + 2]];
+            // Sutherland-Hodgman 齐次空间多边形裁剪（6个裁剪平面）
+            static constexpr float kPlanes[6][4] = {
+                {1, 0, 0, 1},   // 左：x + w >= 0
+                {-1, 0, 0, 1},  // 右：-x + w >= 0
+                {0, 1, 0, 1},   // 下：y + w >= 0
+                {0, -1, 0, 1},  // 上：-y + w >= 0
+                {0, 0, 1, 1},   // 近：z + w >= 0
+                {0, 0, -1, 1},  // 远：-z + w >= 0
+            };
+            std::vector<Varying> poly = {varyings[indices[t * 3 + 0]], varyings[indices[t * 3 + 1]],
+                                         varyings[indices[t * 3 + 2]]};
+            for (int p = 0; p < 6 && poly.size() >= 3; ++p)
+                poly = detail::clipPolygonAgainstPlane(poly, kPlanes[p][0], kPlanes[p][1],
+                                                       kPlanes[p][2], kPlanes[p][3]);
+            if (poly.size() < 3) continue;
 
-            vec4 c0 = getClipPos(va);
-            vec4 c1 = getClipPos(vb);
-            vec4 c2 = getClipPos(vc);
+            // Fan 三角化：(poly[0], poly[f], poly[f+1])
+            for (size_t f = 1; f + 1 < poly.size(); ++f) {
+                const Varying &va = poly[0];
+                const Varying &vb = poly[f];
+                const Varying &vc = poly[f + 1];
 
-            // Near-plane 裁剪
-            if (c0.w <= 0.f || c1.w <= 0.f || c2.w <= 0.f) continue;
+                vec4 c0 = getClipPos(va);
+                vec4 c1 = getClipPos(vb);
+                vec4 c2 = getClipPos(vc);
 
-            // 透视除法 → NDC
-            float iw0 = 1.f / c0.w, iw1 = 1.f / c1.w, iw2 = 1.f / c2.w;
-            float nx0 = c0.x * iw0, ny0 = c0.y * iw0, nz0 = c0.z * iw0;
-            float nx1 = c1.x * iw1, ny1 = c1.y * iw1, nz1 = c1.z * iw1;
-            float nx2 = c2.x * iw2, ny2 = c2.y * iw2, nz2 = c2.z * iw2;
+                // 裁剪后 w 应 > 0，防御极小值
+                if (c0.w < 1e-7f || c1.w < 1e-7f || c2.w < 1e-7f) continue;
 
-            // 简单 NDC 裁剪
-            auto outside = [](float v) { return v < -1.f || v > 1.f; };
-            if (outside(nx0) && outside(nx1) && outside(nx2)) continue;
-            if (outside(ny0) && outside(ny1) && outside(ny2)) continue;
+                // 透视除法 → NDC
+                float iw0 = 1.f / c0.w, iw1 = 1.f / c1.w, iw2 = 1.f / c2.w;
+                float nx0 = c0.x * iw0, ny0 = c0.y * iw0, nz0 = c0.z * iw0;
+                float nx1 = c1.x * iw1, ny1 = c1.y * iw1, nz1 = c1.z * iw1;
+                float nx2 = c2.x * iw2, ny2 = c2.y * iw2, nz2 = c2.z * iw2;
 
-            // 视口变换
-            float sx0 = (nx0 + 1.f) * hw;
-            float sy0 = (1.f - ny0) * hh;
-            float sx1 = (nx1 + 1.f) * hw;
-            float sy1 = (1.f - ny1) * hh;
-            float sx2 = (nx2 + 1.f) * hw;
-            float sy2 = (1.f - ny2) * hh;
+                // 视口变换
+                float sx0 = (nx0 + 1.f) * hw;
+                float sy0 = (1.f - ny0) * hh;
+                float sx1 = (nx1 + 1.f) * hw;
+                float sy1 = (1.f - ny1) * hh;
+                float sx2 = (nx2 + 1.f) * hw;
+                float sy2 = (1.f - ny2) * hh;
 
-            // 背面剔除
-            float area = detail::edgeFunc(sx0, sy0, sx1, sy1, sx2, sy2);
-            if (cullBackFace && area >= 0.f) continue;
-            if (std::fabs(area) < 1e-5f) continue;
+                // 背面剔除
+                float area = detail::edgeFunc(sx0, sy0, sx1, sy1, sx2, sy2);
+                if (cullBackFace && area >= 0.f) continue;
+                if (std::fabs(area) < 1e-5f) continue;
 
-            // 包围盒（裁剪到帧缓冲范围）
-            int minX = std::max(0, static_cast<int>(std::floor(std::min({sx0, sx1, sx2}))));
-            int maxX =
-                std::min(fb.width - 1, static_cast<int>(std::ceil(std::max({sx0, sx1, sx2}))));
-            int minY = std::max(0, static_cast<int>(std::floor(std::min({sy0, sy1, sy2}))));
-            int maxY =
-                std::min(fb.height - 1, static_cast<int>(std::ceil(std::max({sy0, sy1, sy2}))));
-            if (minX > maxX || minY > maxY) continue;
+                // 包围盒（裁剪到帧缓冲范围）
+                int minX = std::max(0, static_cast<int>(std::floor(std::min({sx0, sx1, sx2}))));
+                int maxX =
+                    std::min(fb.width - 1, static_cast<int>(std::ceil(std::max({sx0, sx1, sx2}))));
+                int minY = std::max(0, static_cast<int>(std::floor(std::min({sy0, sy1, sy2}))));
+                int maxY =
+                    std::min(fb.height - 1, static_cast<int>(std::ceil(std::max({sy0, sy1, sy2}))));
+                if (minX > maxX || minY > maxY) continue;
 
-            tris.push_back(Tri{va,  vb,  vc,   sx0,  sy0,  sx1,        sy1,  sx2,  sy2,  nz0,
-                               nz1, nz2, c0.w, c1.w, c2.w, 1.f / area, minX, maxX, minY, maxY});
+                tris.push_back(Tri{va,  vb,  vc,   sx0,  sy0,  sx1,        sy1,  sx2,  sy2,  nz0,
+                                   nz1, nz2, c0.w, c1.w, c2.w, 1.f / area, minX, maxX, minY, maxY});
 
-            // 预计算增量字段
-            // edge function 偏导数：∂edgeFunc(A,B,P)/∂px = -(by-ay)，∂/∂py = (bx-ax)
-            {
-                Tri &tr = tris.back();
-                tr.dE0dx = -(sy2 - sy1);
-                tr.dE0dy = sx2 - sx1;  // edge v1→v2
-                tr.dE1dx = -(sy0 - sy2);
-                tr.dE1dy = sx0 - sx2;  // edge v2→v0
-                tr.dE2dx = -(sy1 - sy0);
-                tr.dE2dy = sx1 - sx0;  // edge v0→v1
+                // 预计算增量字段
+                {
+                    Tri &tr = tris.back();
+                    tr.dE0dx = -(sy2 - sy1);
+                    tr.dE0dy = sx2 - sx1;  // edge v1→v2
+                    tr.dE1dx = -(sy0 - sy2);
+                    tr.dE1dy = sx0 - sx2;  // edge v2→v0
+                    tr.dE2dx = -(sy1 - sy0);
+                    tr.dE2dy = sx1 - sx0;  // edge v0→v1
 
-                // 包围盒起点 (minX+0.5, minY+0.5) 处的 edge 初始值
-                float fpx0 = static_cast<float>(minX) + 0.5f;
-                float fpy0 = static_cast<float>(minY) + 0.5f;
-                tr.e0Start = detail::edgeFunc(sx1, sy1, sx2, sy2, fpx0, fpy0);
-                tr.e1Start = detail::edgeFunc(sx2, sy2, sx0, sy0, fpx0, fpy0);
-                tr.e2Start = detail::edgeFunc(sx0, sy0, sx1, sy1, fpx0, fpy0);
+                    float fpx0 = static_cast<float>(minX) + 0.5f;
+                    float fpy0 = static_cast<float>(minY) + 0.5f;
+                    tr.e0Start = detail::edgeFunc(sx1, sy1, sx2, sy2, fpx0, fpy0);
+                    tr.e1Start = detail::edgeFunc(sx2, sy2, sx0, sy0, fpx0, fpy0);
+                    tr.e2Start = detail::edgeFunc(sx0, sy0, sx1, sy1, fpx0, fpy0);
 
-                // ndcZ = invArea*(nz0*e0 + nz1*e1 + nz2*e2)，线性可步进
-                float ia = tr.invArea;
-                tr.dNdcZdx = ia * (nz0 * tr.dE0dx + nz1 * tr.dE1dx + nz2 * tr.dE2dx);
-                tr.dNdcZdy = ia * (nz0 * tr.dE0dy + nz1 * tr.dE1dy + nz2 * tr.dE2dy);
-                tr.ndcZStart = ia * (nz0 * tr.e0Start + nz1 * tr.e1Start + nz2 * tr.e2Start);
+                    float ia = tr.invArea;
+                    tr.dNdcZdx = ia * (nz0 * tr.dE0dx + nz1 * tr.dE1dx + nz2 * tr.dE2dx);
+                    tr.dNdcZdy = ia * (nz0 * tr.dE0dy + nz1 * tr.dE1dy + nz2 * tr.dE2dy);
+                    tr.ndcZStart = ia * (nz0 * tr.e0Start + nz1 * tr.e1Start + nz2 * tr.e2Start);
+                    tr.insideNeg = (tr.invArea < 0.f);
 
-                // inside 测试方向：invArea<0 时 inside ⟺ 所有 ei≤0
-                tr.insideNeg = (tr.invArea < 0.f);
-            }
-        }
+                    // 线框模式：预计算各边屏幕空间长度
+                    tr.edgeLen01 = std::sqrt((sx1 - sx0) * (sx1 - sx0) + (sy1 - sy0) * (sy1 - sy0));
+                    tr.edgeLen12 = std::sqrt((sx2 - sx1) * (sx2 - sx1) + (sy2 - sy1) * (sy2 - sy1));
+                    tr.edgeLen20 = std::sqrt((sx0 - sx2) * (sx0 - sx2) + (sy0 - sy2) * (sy0 - sy2));
+                }
+            }  // fan loop
+        }  // triangle loop
 
         if (tris.empty()) return;
 
@@ -390,22 +448,29 @@ private:
             float e2_row = tri.e2Start + tri.dE2dy * rowOff_f;
             float ndcZ_row = tri.ndcZStart + tri.dNdcZdy * rowOff_f;
 
-            for (int py = minY; py <= maxY; ++py,
-                     e0_row += tri.dE0dy, e1_row += tri.dE1dy,
+            for (int py = minY; py <= maxY; ++py, e0_row += tri.dE0dy, e1_row += tri.dE1dy,
                      e2_row += tri.dE2dy, ndcZ_row += tri.dNdcZdy) {
                 float e0 = e0_row, e1 = e1_row, e2 = e2_row, ndcZ = ndcZ_row;
 
-                for (int px = tri.minX; px <= tri.maxX; ++px,
-                         e0 += tri.dE0dx, e1 += tri.dE1dx,
-                         e2 += tri.dE2dx, ndcZ += tri.dNdcZdx) {
+                for (int px = tri.minX; px <= tri.maxX;
+                     ++px, e0 += tri.dE0dx, e1 += tri.dE1dx, e2 += tri.dE2dx, ndcZ += tri.dNdcZdx) {
                     // inside 测试（无乘法）
                     if (tri.insideNeg ? (e0 > 0.f || e1 > 0.f || e2 > 0.f)
                                       : (e0 < 0.f || e1 < 0.f || e2 < 0.f))
                         continue;
 
+                    // 线框模式：仅绘制距各边不超过 wireframeWidth 像素的像素
+                    if (wireframe) {
+                        float d0 = std::fabs(e0) / (tri.edgeLen12 + 1e-6f);
+                        float d1 = std::fabs(e1) / (tri.edgeLen20 + 1e-6f);
+                        float d2 = std::fabs(e2) / (tri.edgeLen01 + 1e-6f);
+                        if (std::min({d0, d1, d2}) > wireframeWidth) continue;
+                    }
+
                     // 深度先行，跳过被遮挡像素的 varying 计算
                     float depth = ndcZ * 0.5f + 0.5f;
-                    if (depthTestEnabled && !fb.depthTest(px, py, depth)) continue;
+                    if (depthTestEnabled && !fb.depthTest(px, py, depth, depthWriteEnabled))
+                        continue;
 
                     // 重心坐标
                     float ba = e0 * tri.invArea;
@@ -421,7 +486,16 @@ private:
                                             getClipPos(tri.v2).y * bc,
                                         ndcZ, tri.w0 * ba + tri.w1 * bb + tri.w2 * bc};
 
-                    fb.setPixel(px, py, fragmentShader(frag));
+                    // Alpha Blending（src_over）
+                    vec4 color = fragmentShader(frag);
+                    if (blendEnabled) {
+                        vec4 dst = fb.getPixel(px, py);
+                        float alpha = std::clamp(color.w, 0.f, 1.f);
+                        float inv = 1.f - alpha;
+                        color = {color.x * alpha + dst.x * inv, color.y * alpha + dst.y * inv,
+                                 color.z * alpha + dst.z * inv, alpha + dst.w * inv};
+                    }
+                    fb.setPixel(px, py, color);
                 }
             }
         }

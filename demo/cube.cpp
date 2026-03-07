@@ -3,6 +3,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <vector>
 
 #include "../rasterizer/framebuffer.h"
@@ -70,12 +71,13 @@ static std::vector<int> makeCubeIndices()
     return idx;
 }
 
-int main()
+int main(int argc, char *argv[])
 {
     const int kWidth = 16 * 60;  // 960
     const int kHeight = 9 * 60;  // 540
-    const int kFrames = 60 * 3;  // 180 帧
     const float kFPS = 60.f;
+    const int kSeconds = (argc > 1) ? std::atoi(argv[1]) : 3;
+    const int kFrames = kSeconds * static_cast<int>(kFPS);
     const float kAspect = static_cast<float>(kWidth) / static_cast<float>(kHeight);
 
     // ── 场景参数 ──────────────────────────────────
@@ -135,8 +137,9 @@ int main()
 
         std::snprintf(buf, sizeof(buf), "assets/cube/frame-%02d.ppm", frame);
         fb.savePPM(buf);
-        std::printf("cube frame %d/%d\n", frame + 1, kFrames);
+        std::printf("cube frame %d/%d\r", frame + 1, kFrames);
+        std::fflush(stdout);
     }
-
+    std::printf("\n");
     return 0;
 }
