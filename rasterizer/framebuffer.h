@@ -41,10 +41,26 @@ public:
         return false;
     }
 
+    // 无边界检查版本（仅供光栅器内部使用，调用方须保证坐标合法）
+    inline bool rawDepthTest(int x, int y, float z, bool write = true)
+    {
+        float &cur = depthBuf[static_cast<size_t>(y * width + x)];
+        if (z < cur) {
+            if (write) cur = z;
+            return true;
+        }
+        return false;
+    }
+
     void setPixel(int x, int y, vec4 color)
     {
         if (x < 0 || x >= width || y < 0 || y >= height) return;
         colorBuf[index(x, y)] = color;
+    }
+
+    inline void rawSetPixel(int x, int y, vec4 color)
+    {
+        colorBuf[static_cast<size_t>(y * width + x)] = color;
     }
 
     vec4 getPixel(int x, int y) const
@@ -53,7 +69,13 @@ public:
         return colorBuf[index(x, y)];
     }
 
+    inline const vec4 &rawGetPixel(int x, int y) const
+    {
+        return colorBuf[static_cast<size_t>(y * width + x)];
+    }
+
     // 保存为 PPM P6 二进制文件
+    // 整帧一次性转换 + 单次 fwrite，减少系统调用次数
     bool savePPM(const std::string &path) const
     {
         FILE *f = std::fopen(path.c_str(), "wb");
@@ -63,17 +85,15 @@ public:
         }
         std::fprintf(f, "P6\n%d %d\n255\n", width, height);
 
-        std::vector<unsigned char> row(static_cast<size_t>(width) * 3);
-        for (int y = 0; y < height; ++y) {
-            // PPM 行序为从上到下，framebuffer 存储也是从上到下（y=0 在顶部）
-            for (int x = 0; x < width; ++x) {
-                vec4 c = colorBuf[index(x, y)];
-                row[x * 3 + 0] = toByte(c.x);
-                row[x * 3 + 1] = toByte(c.y);
-                row[x * 3 + 2] = toByte(c.z);
-            }
-            std::fwrite(row.data(), 1, row.size(), f);
+        const size_t npix = static_cast<size_t>(width * height);
+        std::vector<unsigned char> buf(npix * 3);
+        for (size_t i = 0; i < npix; ++i) {
+            const vec4 &c = colorBuf[i];
+            buf[i * 3 + 0] = toByte(c.x);
+            buf[i * 3 + 1] = toByte(c.y);
+            buf[i * 3 + 2] = toByte(c.z);
         }
+        std::fwrite(buf.data(), 1, buf.size(), f);
         std::fclose(f);
         return true;
     }

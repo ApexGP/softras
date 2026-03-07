@@ -56,6 +56,7 @@ V lerpVarying(const V &a, const V &b, const V &c, float ba, float bb, float bc)
 }
 
 // 透视正确插值：将 varying/w 插值后再除以 1/w
+// 跳过前 4 个 float（clipPos），由调用方单独处理
 template <typename V>
 V perspectiveCorrectLerp(const V &a, const V &b, const V &c, float wa, float wb, float wc, float ba,
                          float bb, float bc)
@@ -67,14 +68,14 @@ V perspectiveCorrectLerp(const V &a, const V &b, const V &c, float wa, float wb,
     float iw = iwa * ba + iwb * bb + iwc * bc;
     if (std::fabs(iw) < 1e-7f) iw = 1e-7f;
 
-    // 对每个 float 成员：值/w 的加权平均，再乘以 w_interp
+    // 对每个 float 成员（跳过前 4 个 clipPos，由调用方覆写）
     constexpr size_t N = sizeof(V) / sizeof(float);
     V result{};
     const float *fa = reinterpret_cast<const float *>(&a);
     const float *fb = reinterpret_cast<const float *>(&b);
     const float *fc = reinterpret_cast<const float *>(&c);
     float *fr = reinterpret_cast<float *>(&result);
-    for (size_t i = 0; i < N; ++i) {
+    for (size_t i = 4; i < N; ++i) {
         float val = fa[i] * iwa * ba + fb[i] * iwb * bb + fc[i] * iwc * bc;
         fr[i] = val / iw;
     }
@@ -260,8 +261,8 @@ public:
     // 注意：正确的半透明渲染需要从后往前排序，管线不自动排序
     bool blendEnabled = false;
     // 并行线程数（0 或 1 为单线程，>1 按行分块并行）
-    // 默认取硬件核心数的一半，避免占满 CPU
-    unsigned int threadCount = std::max(1u, std::thread::hardware_concurrency() / 2);
+    // 默认取全部硬件核心数，充分利用 CPU
+    unsigned int threadCount = std::max(1u, std::thread::hardware_concurrency());
 
     void setVertexShader(VertexShader vs)
     {
@@ -396,11 +397,15 @@ public:
             if (!pool_ || pool_->size() != nThreads) pool_.reset(new detail::ThreadPool(nThreads));
 
             std::vector<std::function<void()>> tasks;
-            tasks.reserve(nThreads);
-            int rowsPerThread = fb.height / static_cast<int>(nThreads);
+            // 创建 nThreads×4 个任务：更细粒度使线程池自动负载均衡（工作窃取）
+            unsigned int numTasks = std::min(static_cast<unsigned int>(fb.height), nThreads * 4u);
+            tasks.reserve(numTasks);
+            int rowsPerTask =
+                (fb.height + static_cast<int>(numTasks) - 1) / static_cast<int>(numTasks);
             int startRow = 0;
-            for (unsigned int tid = 0; tid < nThreads; ++tid) {
-                int endRow = (tid == nThreads - 1) ? fb.height - 1 : startRow + rowsPerThread - 1;
+            for (unsigned int tid = 0; tid < numTasks; ++tid) {
+                int endRow = std::min(fb.height - 1, startRow + rowsPerTask - 1);
+                if (startRow > fb.height - 1) break;
                 tasks.emplace_back([this, &tris, &fb, startRow, endRow]() {
                     rasterizeRows(tris, fb, startRow, endRow);
                 });
@@ -469,7 +474,7 @@ private:
 
                     // 深度先行，跳过被遮挡像素的 varying 计算
                     float depth = ndcZ * 0.5f + 0.5f;
-                    if (depthTestEnabled && !fb.depthTest(px, py, depth, depthWriteEnabled))
+                    if (depthTestEnabled && !fb.rawDepthTest(px, py, depth, depthWriteEnabled))
                         continue;
 
                     // 重心坐标
@@ -477,7 +482,7 @@ private:
                     float bb = e1 * tri.invArea;
                     float bc = e2 * tri.invArea;
 
-                    // 透视正确 Varying 插值
+                    // 透视正确 Varying 插值（跳过 clipPos，由下方覆写）
                     Varying frag = detail::perspectiveCorrectLerp(tri.v0, tri.v1, tri.v2, tri.w0,
                                                                   tri.w1, tri.w2, ba, bb, bc);
                     getClipPos(frag) = {getClipPos(tri.v0).x * ba + getClipPos(tri.v1).x * bb +
@@ -489,13 +494,13 @@ private:
                     // Alpha Blending（src_over）
                     vec4 color = fragmentShader(frag);
                     if (blendEnabled) {
-                        vec4 dst = fb.getPixel(px, py);
+                        vec4 dst = fb.rawGetPixel(px, py);
                         float alpha = std::clamp(color.w, 0.f, 1.f);
                         float inv = 1.f - alpha;
                         color = {color.x * alpha + dst.x * inv, color.y * alpha + dst.y * inv,
                                  color.z * alpha + dst.z * inv, alpha + dst.w * inv};
                     }
-                    fb.setPixel(px, py, color);
+                    fb.rawSetPixel(px, py, color);
                 }
             }
         }
