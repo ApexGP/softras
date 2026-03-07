@@ -5,11 +5,7 @@ INCLUDES := -I.
 # 渲染时长（秒），可通过命令行覆盖：make DURATION=5 test
 DURATION ?= 3
 FPS      := 60
-# 最后一帧帧号（0-indexed）
-LAST_IDX      := $(shell expr $(DURATION) \* $(FPS) - 1)
-# 格式化帧号字符串（quad/cube 用 %02d，showcase 用 %03d）
-QUAD_LAST_STR := $(shell printf '%02d' $(LAST_IDX))
-SHOW_LAST_STR := $(shell printf '%03d' $(LAST_IDX))
+KFRAMES  := $(shell expr $(DURATION) \* $(FPS))
 
 # 源文件
 QUAD_SRC     := demo/quad.cpp
@@ -48,50 +44,66 @@ $(CUBE_BIN): $(CUBE_SRC) $(RASTERIZER_HEADERS) | $(BUILD_DIR)
 $(SHOWCASE_BIN): $(SHOWCASE_SRC) $(RASTERIZER_HEADERS) | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $< -o $@
 
-# 各渲染任务的哨兵：最后一帧 PPM（帧号随 DURATION 动态变化）
-QUAD_SENTINEL     := $(QUAD_PPM_DIR)/frame-$(QUAD_LAST_STR).ppm
-CUBE_SENTINEL     := $(CUBE_PPM_DIR)/frame-$(QUAD_LAST_STR).ppm
-SHOWCASE_SENTINEL := $(SHOWCASE_PPM_DIR)/frame-$(SHOW_LAST_STR).ppm
+# ────────────────────────────────────────────────
+# 渲染 stamp 文件（文件名嵌入 DURATION，解决时长变短时残留旧帧的问题）
+#
+# 工作原理：
+#   - stamp 命名为 .rendered-$(DURATION)s，如 .rendered-3s / .rendered-5s
+#   - DURATION 改变 → 旧 stamp 与当前目标名不匹配 → Make 触发重建
+#   - 重建时先清空所有 PPM 帧和旧 stamp，再渲染，再 touch 新 stamp
+#   - DURATION 不变且二进制未变 → stamp 比二进制新 → 直接跳过渲染
+# ────────────────────────────────────────────────
+QUAD_STAMP     := $(QUAD_PPM_DIR)/.rendered-$(DURATION)s
+CUBE_STAMP     := $(CUBE_PPM_DIR)/.rendered-$(DURATION)s
+SHOWCASE_STAMP := $(SHOWCASE_PPM_DIR)/.rendered-$(DURATION)s
+
+$(QUAD_STAMP): $(QUAD_BIN) | $(QUAD_PPM_DIR)
+	@echo ">>> Purging $(QUAD_PPM_DIR) (old frames + stamps) ..."
+	@rm -f $(QUAD_PPM_DIR)/frame-*.ppm $(QUAD_PPM_DIR)/.rendered-*
+	@echo ">>> Rendering quad (1920x1080, $(DURATION)s, $(KFRAMES) frames) ..."
+	./$(QUAD_BIN) $(DURATION)
+	@touch $@
+
+$(CUBE_STAMP): $(CUBE_BIN) | $(CUBE_PPM_DIR)
+	@echo ">>> Purging $(CUBE_PPM_DIR) (old frames + stamps) ..."
+	@rm -f $(CUBE_PPM_DIR)/frame-*.ppm $(CUBE_PPM_DIR)/.rendered-*
+	@echo ">>> Rendering cube (960x540, $(DURATION)s, $(KFRAMES) frames) ..."
+	./$(CUBE_BIN) $(DURATION)
+	@touch $@
+
+$(SHOWCASE_STAMP): $(SHOWCASE_BIN) | $(SHOWCASE_PPM_DIR)
+	@echo ">>> Purging $(SHOWCASE_PPM_DIR) (old frames + stamps) ..."
+	@rm -f $(SHOWCASE_PPM_DIR)/frame-*.ppm $(SHOWCASE_PPM_DIR)/.rendered-*
+	@echo ">>> Rendering showcase (960x540, $(DURATION)s, $(KFRAMES) frames) ..."
+	./$(SHOWCASE_BIN) $(DURATION)
+	@touch $@
 
 # ────────────────────────────────────────────────
 # make test：先确保二进制是最新的（显式依赖 all），再渲染 → 合成视频
 #   - all 是 phony，每次都会检查源码/头文件时间戳，按需重编译
-#   - 若哨兵帧比二进制更新，跳过渲染
-#   - 若 MP4 比哨兵帧更新，跳过编码
+#   - stamp 比二进制新且 DURATION 未变 → 跳过渲染
+#   - MP4 比 stamp 新 → 跳过编码
 # ────────────────────────────────────────────────
 test: all $(MEDIA_DIR)/quad.mp4 $(MEDIA_DIR)/cube.mp4 $(MEDIA_DIR)/showcase.mp4
-	@echo "Done. (DURATION=$(DURATION)s, $(shell expr $(DURATION) \* $(FPS)) frames)"
+	@echo "Done. (DURATION=$(DURATION)s, $(KFRAMES) frames)"
 	@echo "  $(MEDIA_DIR)/quad.mp4      (1920x1080, $(FPS)fps, $(DURATION)s)"
 	@echo "  $(MEDIA_DIR)/cube.mp4      (960x540,   $(FPS)fps, $(DURATION)s)"
 	@echo "  $(MEDIA_DIR)/showcase.mp4  (960x540,   $(FPS)fps, $(DURATION)s)"
 
-# ── 渲染阶段（依赖二进制；哨兵存在且比二进制新则跳过）──
-$(QUAD_SENTINEL): $(QUAD_BIN) | $(QUAD_PPM_DIR)
-	@echo ">>> Rendering quad (1920x1080, $(DURATION)s) ..."
-	./$(QUAD_BIN) $(DURATION)
-
-$(CUBE_SENTINEL): $(CUBE_BIN) | $(CUBE_PPM_DIR)
-	@echo ">>> Rendering cube (960x540, $(DURATION)s) ..."
-	./$(CUBE_BIN) $(DURATION)
-
-$(SHOWCASE_SENTINEL): $(SHOWCASE_BIN) | $(SHOWCASE_PPM_DIR)
-	@echo ">>> Rendering showcase (960x540, $(DURATION)s) ..."
-	./$(SHOWCASE_BIN) $(DURATION)
-
-# ── 编码阶段（依赖哨兵帧；MP4 比哨兵新则跳过）──
-$(MEDIA_DIR)/quad.mp4: $(QUAD_SENTINEL) | $(MEDIA_DIR)
+# ── 编码阶段（依赖 stamp；MP4 比 stamp 新则跳过）──
+$(MEDIA_DIR)/quad.mp4: $(QUAD_STAMP) | $(MEDIA_DIR)
 	@echo ">>> Encoding $@ ..."
-	ffmpeg -y -framerate 60 -i $(QUAD_PPM_DIR)/frame-%02d.ppm \
+	ffmpeg -y -framerate $(FPS) -i $(QUAD_PPM_DIR)/frame-%02d.ppm \
 		-c:v libx264 -pix_fmt yuv420p $@
 
-$(MEDIA_DIR)/cube.mp4: $(CUBE_SENTINEL) | $(MEDIA_DIR)
+$(MEDIA_DIR)/cube.mp4: $(CUBE_STAMP) | $(MEDIA_DIR)
 	@echo ">>> Encoding $@ ..."
-	ffmpeg -y -framerate 60 -i $(CUBE_PPM_DIR)/frame-%02d.ppm \
+	ffmpeg -y -framerate $(FPS) -i $(CUBE_PPM_DIR)/frame-%02d.ppm \
 		-c:v libx264 -pix_fmt yuv420p $@
 
-$(MEDIA_DIR)/showcase.mp4: $(SHOWCASE_SENTINEL) | $(MEDIA_DIR)
+$(MEDIA_DIR)/showcase.mp4: $(SHOWCASE_STAMP) | $(MEDIA_DIR)
 	@echo ">>> Encoding $@ ..."
-	ffmpeg -y -framerate 60 -i $(SHOWCASE_PPM_DIR)/frame-%03d.ppm \
+	ffmpeg -y -framerate $(FPS) -i $(SHOWCASE_PPM_DIR)/frame-%03d.ppm \
 		-c:v libx264 -pix_fmt yuv420p $@
 
 # 按需创建目录
