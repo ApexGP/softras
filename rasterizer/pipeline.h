@@ -21,9 +21,9 @@
 
 #pragma once
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <condition_variable>
-#include <deque>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -134,7 +134,8 @@ namespace detail {
 class ThreadPool
 {
 public:
-    explicit ThreadPool(unsigned int n) : pending_(0), stop_(false)
+    // 创建 n 个工作线程（调用方/主线程额外参与，共 n+1 个并发执行者）
+    explicit ThreadPool(unsigned int n) : stop_(false), generation_(0), doneCount_(0)
     {
         workers_.reserve(n);
         for (unsigned int i = 0; i < n; ++i) workers_.emplace_back([this] { workerLoop(); });
@@ -145,54 +146,72 @@ public:
         {
             std::unique_lock<std::mutex> lk(mu_);
             stop_ = true;
+            ++generation_;
         }
-        workCv_.notify_all();
+        startCv_.notify_all();
         for (auto &w : workers_) w.join();
     }
 
-    // 提交一批任务并阻塞直到全部完成
-    void runAndWait(std::vector<std::function<void()>> tasks)
+    // 将 numItems 个工作项 [0, numItems) 分配给工作线程和主线程并发执行
+    // fn(i) 会被主线程与所有工作线程并发调用；函数返回时所有工作项已完成
+    void runAndWait(int numItems, const std::function<void(int)> &fn)
     {
-        if (tasks.empty()) return;
+        if (numItems <= 0) return;
         {
             std::unique_lock<std::mutex> lk(mu_);
-            pending_ = tasks.size();
-            for (auto &t : tasks) queue_.push_back(std::move(t));
+            nextItem_.store(0, std::memory_order_relaxed);
+            totalItems_ = numItems;
+            batchFn_ = &fn;
+            doneCount_ = 0;
+            ++generation_;
         }
-        workCv_.notify_all();
+        startCv_.notify_all();  // 唤醒所有工作线程
+        drainItems();           // 主线程参与消费工作项，不再空转等待
         std::unique_lock<std::mutex> lk(mu_);
-        doneCv_.wait(lk, [this] { return pending_ == 0; });
+        doneCv_.wait(lk, [this] { return doneCount_ == (int) workers_.size(); });
     }
 
     unsigned int size() const
     {
-        return static_cast<unsigned int>(workers_.size());
+        return (unsigned int) workers_.size();
     }
 
 private:
     std::vector<std::thread> workers_;
-    std::deque<std::function<void()>> queue_;
     std::mutex mu_;
-    std::condition_variable workCv_;  // 唤醒工作线程
-    std::condition_variable doneCv_;  // 通知主线程完成
-    size_t pending_;
+    std::condition_variable startCv_;  // 工作线程等待新批次
+    std::condition_variable doneCv_;   // 主线程等待批次完成
     bool stop_;
+    int generation_;
+    int doneCount_;
+
+    // 原子工作计数器：线程用 fetch_add 无锁抢任务
+    std::atomic<int> nextItem_{0};
+    int totalItems_{0};
+    const std::function<void(int)> *batchFn_{nullptr};
+
+    // 主线程和工作线程共用：原子递增抢任务，直到耗尽
+    void drainItems()
+    {
+        int id;
+        while ((id = nextItem_.fetch_add(1, std::memory_order_relaxed)) < totalItems_)
+            (*batchFn_)(id);
+    }
 
     void workerLoop()
     {
+        int lastGen = 0;
         while (true) {
-            std::function<void()> task;
             {
                 std::unique_lock<std::mutex> lk(mu_);
-                workCv_.wait(lk, [this] { return stop_ || !queue_.empty(); });
-                if (stop_ && queue_.empty()) return;
-                task = std::move(queue_.front());
-                queue_.pop_front();
+                startCv_.wait(lk, [&] { return generation_ != lastGen || stop_; });
+                if (stop_) return;
+                lastGen = generation_;
             }
-            task();
+            drainItems();
             {
                 std::unique_lock<std::mutex> lk(mu_);
-                if (--pending_ == 0) doneCv_.notify_one();
+                if (++doneCount_ == (int) workers_.size()) doneCv_.notify_one();
             }
         }
     }
@@ -388,30 +407,29 @@ public:
 
         if (tris.empty()) return;
 
-        // 3. 光栅化：按行范围拆分给线程池，行范围不重叠 → 无锁
-        unsigned int nThreads = std::max(1u, threadCount);
-        if (nThreads == 1) {
+        // 3. 光栅化：细粒度 tile 任务，主线程参与 + nWorkers 个工作线程
+        //    原子计数器抢任务，自动负载均衡（无论同构全大核还是异构 P/E 核均有效）
+        unsigned int nTotal = std::max(1u, threadCount);  // 含主线程的总并发数
+        unsigned int nWorkers = nTotal - 1;               // 线程池工作线程数
+
+        if (nWorkers == 0) {
             rasterizeRows(tris, fb, 0, fb.height - 1);
         } else {
             // 懒惰初始化：首次 draw() 或 threadCount 变化时重建线程池
-            if (!pool_ || pool_->size() != nThreads) pool_.reset(new detail::ThreadPool(nThreads));
+            if (!pool_ || pool_->size() != nWorkers) pool_.reset(new detail::ThreadPool(nWorkers));
 
-            std::vector<std::function<void()>> tasks;
-            // 创建 nThreads×4 个任务：更细粒度使线程池自动负载均衡（工作窃取）
-            unsigned int numTasks = std::min(static_cast<unsigned int>(fb.height), nThreads * 4u);
-            tasks.reserve(numTasks);
-            int rowsPerTask =
-                (fb.height + static_cast<int>(numTasks) - 1) / static_cast<int>(numTasks);
-            int startRow = 0;
-            for (unsigned int tid = 0; tid < numTasks; ++tid) {
+            // 细粒度任务：nTotal×16 个任务，减少尾延迟，对任何多核架构均有效
+            // 例：16 线程 × 1080 行 → rowsPerTask=4, numTasks=270
+            int rowsPerTask = std::max(1, fb.height / (static_cast<int>(nTotal) * 16));
+            int numTasks = (fb.height + rowsPerTask - 1) / rowsPerTask;
+
+            const auto taskFn = [&](int tid) {
+                int startRow = tid * rowsPerTask;
                 int endRow = std::min(fb.height - 1, startRow + rowsPerTask - 1);
-                if (startRow > fb.height - 1) break;
-                tasks.emplace_back([this, &tris, &fb, startRow, endRow]() {
-                    rasterizeRows(tris, fb, startRow, endRow);
-                });
-                startRow = endRow + 1;
-            }
-            pool_->runAndWait(std::move(tasks));
+                rasterizeRows(tris, fb, startRow, endRow);
+            };
+
+            pool_->runAndWait(numTasks, taskFn);
         }
     }
 

@@ -64,7 +64,7 @@ pipe.wireframe      = false;     // default: off
 pipe.wireframeWidth = 1.0f;      // wireframe line width in pixels
 
 // Multithreading
-pipe.threadCount = 0;            // 0 = auto (hardware_concurrency/2), 1 = single-threaded
+pipe.threadCount = 0;            // 0 = auto (hardware_concurrency), 1 = single-threaded
 ```
 
 ---

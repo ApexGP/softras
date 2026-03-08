@@ -115,8 +115,8 @@ static Texture2D makeCheckerTexture(int res)
 
 int main(int argc, char *argv[])
 {
-    const int kWidth = 960;
-    const int kHeight = 540;
+    const int kWidth = 16 * 60;
+    const int kHeight = 9 * 60;
     const float kFPS = 60.f;
     const int kSeconds = (argc > 1) ? std::atoi(argv[1]) : 3;
     const int kFrames = kSeconds * static_cast<int>(kFPS);

@@ -63,7 +63,7 @@ pipe.wireframe      = false;     // 默认关
 pipe.wireframeWidth = 1.0f;      // 线框像素宽度
 
 // 多线程
-pipe.threadCount = 0;            // 0 = 自动（hardware_concurrency/2），1 = 单线程
+pipe.threadCount = 0;            // 0 = 自动（hardware_concurrency），1 = 单线程
 ```
 
 ---
