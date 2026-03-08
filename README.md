@@ -68,6 +68,10 @@ Output:
 When `DURATION` changes, old frames are automatically purged and re-rendered.
 When `DURATION` and source files are unchanged, rendering and encoding are skipped.
 
+## Demo
+
+https://github.com/user-attachments/assets/9c588869-1eeb-4a42-b85b-e28fe471d623
+
 ## Documentation
 
 - [API Reference](docs/en-US/API.md) — pipeline config, shaders, textures, blending, math reference, pipeline flow

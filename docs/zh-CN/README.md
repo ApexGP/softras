@@ -66,6 +66,10 @@ make clean             # 删除编译产物（保留 PPM 和视频）
 
 DURATION 变化时自动清除旧帧重新渲染；DURATION 不变且源码未改动时跳过渲染和编码。
 
+## 渲染示例
+
+https://github.com/user-attachments/assets/9c588869-1eeb-4a42-b85b-e28fe471d623
+
 ## 文档
 
 - [API 使用说明](API.md) — 管线配置、着色器、纹理、blending、数学库速查、管线流程图
