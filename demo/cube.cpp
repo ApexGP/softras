@@ -97,7 +97,6 @@ int main(int argc, char *argv[])
     pipe.depthTestEnabled = true;
 
     Framebuffer fb(kWidth, kHeight);
-    char buf[256];
 
     for (int frame = 0; frame < kFrames; ++frame) {
         float time = static_cast<float>(frame) / kFPS;
@@ -135,11 +134,10 @@ int main(int argc, char *argv[])
         fb.clear(vec4{0.05f, 0.05f, 0.08f, 1.f});
         pipe.draw(cubeVerts, cubeIndices, fb);
 
-        std::snprintf(buf, sizeof(buf), "assets/cube/frame-%02d.ppm", frame);
-        fb.savePPM(buf);
-        std::printf("cube frame %d/%d\r", frame + 1, kFrames);
-        std::fflush(stdout);
+        fb.writePPM(stdout);
+        std::fprintf(stderr, "cube frame %d/%d\r", frame + 1, kFrames);
+        std::fflush(stderr);
     }
-    std::printf("\n");
+    std::fprintf(stderr, "\n");
     return 0;
 }

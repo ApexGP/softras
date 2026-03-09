@@ -86,7 +86,6 @@ int main(int argc, char *argv[])
     });
 
     Framebuffer fb(kWidth, kHeight);
-    char buf[256];
 
     for (int frame = 0; frame < kFrames; ++frame) {
         float time = static_cast<float>(frame) / kFPS;
@@ -103,11 +102,10 @@ int main(int argc, char *argv[])
         fb.clear();
         pipe.draw(verts, indices, fb);
 
-        std::snprintf(buf, sizeof(buf), "assets/quad/frame-%02d.ppm", frame);
-        fb.savePPM(buf);
-        std::printf("quad frame %d/%d\r", frame + 1, kFrames);
-        std::fflush(stdout);
+        fb.writePPM(stdout);
+        std::fprintf(stderr, "quad frame %d/%d\r", frame + 1, kFrames);
+        std::fflush(stderr);
     }
-    std::printf("\n");
+    std::fprintf(stderr, "\n");
     return 0;
 }

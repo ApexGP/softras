@@ -83,6 +83,14 @@ public:
             std::perror("fopen");
             return false;
         }
+        bool ok = writePPM(f);
+        std::fclose(f);
+        return ok;
+    }
+
+    // 将一帧 PPM 写入已打开的文件流（供 pipe 模式使用）
+    bool writePPM(FILE *f) const
+    {
         std::fprintf(f, "P6\n%d %d\n255\n", width, height);
 
         const size_t npix = static_cast<size_t>(width * height);
@@ -94,7 +102,6 @@ public:
             buf[i * 3 + 2] = toByte(c.z);
         }
         std::fwrite(buf.data(), 1, buf.size(), f);
-        std::fclose(f);
         return true;
     }
 

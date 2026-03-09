@@ -9,7 +9,7 @@
 
 A header-only CPU software rendering pipeline written in C++17.
 No OpenGL, Vulkan, or any graphics library required.
-Simulates a GPU programmable pipeline (vertex + fragment shaders), outputs PPM image sequences, and can be encoded to MP4 via ffmpeg.
+Simulates a GPU programmable pipeline (vertex + fragment shaders), streams PPM frames directly to ffmpeg via pipe — no intermediate files on disk.
 
 ## Features
 
@@ -36,8 +36,7 @@ softras/
 │   ├── cube.cpp        #   Rotating cube + Blinn-Phong (960×540)
 │   └── showcase.cpp    #   Feature showcase (960×540)
 │
-├── assets/             # PPM frame sequences (render output)
-├── media/              # MP4 videos (ffmpeg output)
+├── media/              # MP4 videos (ffmpeg output, e.g. quad-3s.mp4)
 └── Makefile
 ```
 
@@ -54,18 +53,19 @@ softras/
 make test              # Render 3 seconds (180 frames) by default
 make test DURATION=5   # Custom duration
 make                   # Build only
-make clean             # Remove build artifacts (keeps PPM and videos)
+make clean             # Remove build/ (keeps videos)
+make clean-media       # Remove build/ and media/
 ```
 
 Output:
 
-| File                 | Resolution      | Content                     |
-| -------------------- | --------------- | --------------------------- |
-| `media/quad.mp4`     | 1920×1080 60fps | Fullscreen procedural shade |
-| `media/cube.mp4`     | 960×540 60fps   | Rotating cube, Blinn-Phong  |
-| `media/showcase.mp4` | 960×540 60fps   | Feature showcase            |
+| File                      | Resolution      | Content                     |
+| ------------------------- | --------------- | --------------------------- |
+| `media/quad-3s.mp4`       | 1920×1080 60fps | Fullscreen procedural shader |
+| `media/cube-3s.mp4`       | 960×540 60fps   | Rotating cube, Blinn-Phong  |
+| `media/showcase-3s.mp4`   | 960×540 60fps   | Feature showcase            |
 
-When `DURATION` changes, old frames are automatically purged and re-rendered.
+When `DURATION` changes, the target filename changes (e.g. `quad-5s.mp4`) so Make automatically rebuilds.
 When `DURATION` and source files are unchanged, rendering and encoding are skipped.
 
 ## Demo

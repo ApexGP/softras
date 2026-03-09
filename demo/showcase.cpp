@@ -146,7 +146,6 @@ int main(int argc, char *argv[])
     Pipeline<Vertex, Varying> pipe;
 
     Framebuffer fb(kWidth, kHeight);
-    char buf[256];
 
     for (int frame = 0; frame < kFrames; ++frame) {
         float t = static_cast<float>(frame) / kFPS;
@@ -276,11 +275,10 @@ int main(int argc, char *argv[])
             pipe.draw(yellowCubeVerts, cubeIdx, fb);
         }
 
-        std::snprintf(buf, sizeof(buf), "assets/showcase/frame-%03d.ppm", frame);
-        fb.savePPM(buf);
-        std::printf("showcase frame %d/%d\r", frame + 1, kFrames);
-        std::fflush(stdout);
+        fb.writePPM(stdout);
+        std::fprintf(stderr, "showcase frame %d/%d\r", frame + 1, kFrames);
+        std::fflush(stderr);
     }
-    std::printf("\n");
+    std::fprintf(stderr, "\n");
     return 0;
 }
