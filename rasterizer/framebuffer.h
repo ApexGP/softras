@@ -101,8 +101,8 @@ public:
             buf[i * 3 + 1] = toByte(c.y);
             buf[i * 3 + 2] = toByte(c.z);
         }
-        std::fwrite(buf.data(), 1, buf.size(), f);
-        return true;
+        size_t written = std::fwrite(buf.data(), 1, buf.size(), f);
+        return written == buf.size();
     }
 
 private:
