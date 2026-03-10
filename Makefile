@@ -5,38 +5,38 @@ CXX      := g++
 CXXFLAGS := -std=c++17 -O3 -g -pthread
 INCLUDES := -I.
 
-# 渲染时长（秒），可通过命令行覆盖：make DURATION=5 test
+# Render duration in seconds; override on command line: make DURATION=5 test
 DURATION ?= 3
 FPS      := 60
 KFRAMES  := $(shell expr $(DURATION) \* $(FPS))
 
-# 源文件
+# Source files
 QUAD_SRC     := demo/quad.cpp
 CUBE_SRC     := demo/cube.cpp
 SHOWCASE_SRC := demo/showcase.cpp
 
-# 输出目录
+# Output directories
 BUILD_DIR := build
 MEDIA_DIR := media
 
-# 二进制输出
+# Binary outputs
 QUAD_BIN     := $(BUILD_DIR)/quad
 CUBE_BIN     := $(BUILD_DIR)/cube
 SHOWCASE_BIN := $(BUILD_DIR)/showcase
 
-# MP4 文件名包含时长，DURATION 变化时自动触发重建
+# MP4 filenames include duration so changing DURATION triggers a rebuild
 QUAD_MP4     := $(MEDIA_DIR)/quad-$(DURATION)s.mp4
 CUBE_MP4     := $(MEDIA_DIR)/cube-$(DURATION)s.mp4
 SHOWCASE_MP4 := $(MEDIA_DIR)/showcase-$(DURATION)s.mp4
 
-# 头文件依赖（任一变动则重新编译）
+# Header dependencies (any change triggers recompilation)
 RASTERIZER_HEADERS := rasterizer/math.h rasterizer/framebuffer.h \
                       rasterizer/pipeline.h rasterizer/texture.h
 
 .PHONY: all test clean clean-media
 
 # ────────────────────────────────────────────────
-# 默认目标：仅编译
+# Default target: compile only
 # ────────────────────────────────────────────────
 all: $(QUAD_BIN) $(CUBE_BIN) $(SHOWCASE_BIN)
 
@@ -50,7 +50,7 @@ $(SHOWCASE_BIN): $(SHOWCASE_SRC) $(RASTERIZER_HEADERS) | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $< -o $@
 
 # ────────────────────────────────────────────────
-# 渲染 + 编码（单条 pipe 命令，零中间文件）
+# Render + encode (single pipe command, no intermediate files)
 # ────────────────────────────────────────────────
 $(QUAD_MP4): $(QUAD_BIN) | $(MEDIA_DIR)
 	@echo ">>> Rendering + encoding quad (1920x1080, $(DURATION)s, $(KFRAMES) frames) ..."
@@ -71,7 +71,7 @@ $(SHOWCASE_MP4): $(SHOWCASE_BIN) | $(MEDIA_DIR)
 		-c:v libx264 -pix_fmt yuv420p $@
 
 # ────────────────────────────────────────────────
-# make test：编译 + 渲染 + 编码
+# make test: compile + render + encode
 # ────────────────────────────────────────────────
 test: all $(QUAD_MP4) $(CUBE_MP4) $(SHOWCASE_MP4)
 	@echo "Done. (DURATION=$(DURATION)s, $(KFRAMES) frames)"
@@ -79,13 +79,13 @@ test: all $(QUAD_MP4) $(CUBE_MP4) $(SHOWCASE_MP4)
 	@echo "  $(CUBE_MP4)      (960x540,   $(FPS)fps, $(DURATION)s)"
 	@echo "  $(SHOWCASE_MP4)  (960x540,   $(FPS)fps, $(DURATION)s)"
 
-# 按需创建目录
+# Create directories on demand
 $(BUILD_DIR) $(MEDIA_DIR):
 	mkdir -p $@
 
 # ────────────────────────────────────────────────
-# make clean：删除 build/（保留视频）
-# make clean-media：同时删除 media/
+# make clean:       remove build/ (keep media)
+# make clean-media: also remove media/
 # ────────────────────────────────────────────────
 clean:
 	rm -rf $(BUILD_DIR)

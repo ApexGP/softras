@@ -64,7 +64,7 @@ pipe.wireframe      = false;     // default: off
 pipe.wireframeWidth = 1.0f;      // wireframe line width in pixels
 
 // Multithreading
-pipe.threadCount = 0;            // 0 = auto (hardware_concurrency), 1 = single-threaded
+pipe.threadCount = 4;            // default: hardware_concurrency() (all cores); 1 = force single-threaded
 ```
 
 ---
@@ -110,7 +110,11 @@ pipe.draw(vertices, indices, fb);
 ## Save the Image
 
 ```cpp
+// Save to a file
 fb.savePPM("output.ppm");
+
+// Write to an already-open file stream (useful for pipe output)
+fb.writePPM(fp);  // fp is FILE*; caller is responsible for open/close
 ```
 
 ---
@@ -118,8 +122,14 @@ fb.savePPM("output.ppm");
 ## Texture Sampling
 
 ```cpp
+// Create from RGBA byte array (4 bytes per pixel)
+Texture2D tex = Texture2D::fromRGBA8(width, height, rgbaData);
+
 // Create from raw RGB byte array
 Texture2D tex = Texture2D::fromRGB8(width, height, rgbData);
+
+// Create from vec4 float array (row-major)
+Texture2D tex = Texture2D::fromVec4(width, height, vec4Data);
 
 // Basic bilinear sampling (no mipmap)
 tex.sample(f.uv);

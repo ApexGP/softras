@@ -1,23 +1,5 @@
-// rasterizer/pipeline.h — 模板化 CPU 光栅化渲染管线
-//
-// 用法示例：
-//   struct MyVertex  { vec3 pos; vec2 uv; };
-//   struct MyVarying { vec4 clipPos; vec2 uv; };   // clipPos 必须存在
-//
-//   Pipeline<MyVertex, MyVarying> pipe;
-//   pipe.setVertexShader([](const MyVertex& v) -> MyVarying {
-//       return { mvp * vec4(v.pos, 1.f), v.uv };
-//   });
-//   pipe.setFragmentShader([](const MyVarying& f) -> vec4 {
-//       return { f.uv.x, f.uv.y, 0.f, 1.f };
-//   });
-//   pipe.draw(vertices, indices, framebuffer);
-//
-// 约定：
-//   - Varying 必须含 `vec4 clipPos` 字段（clip space 位置）
-//   - indices 以 3 个一组描述三角形，逆时针为正面
-//   - 深度测试使用 NDC z 值（[-1,1] 映射到 [0,1]）
-//   - threadCount > 1 时按行范围并行，各线程负责不重叠的行 → 无锁无 data race
+// rasterizer/pipeline.h — Templated CPU rasterization pipeline
+// See docs/en-US/API.md or docs/zh-CN/API.md for usage
 
 #pragma once
 #include <algorithm>
@@ -34,13 +16,13 @@
 #include "math.h"
 
 // ─────────────────────────────────────────────
-//  Varying 线性插值辅助
-//  通过将 Varying 视为 float 数组进行重心坐标插值
-//  要求 Varying 是 standard-layout 且只含 float 成员
+//  Varying linear interpolation helper
+//  Treats Varying as a float array for barycentric interpolation.
+//  Requires Varying to be standard-layout with only float members.
 // ─────────────────────────────────────────────
 namespace detail {
 
-// 对任意含 float 成员的 Varying 按字节偏移插值
+// Interpolate any Varying with float members by byte offset.
 // N = sizeof(Varying) / sizeof(float)
 template <typename V>
 V lerpVarying(const V &a, const V &b, const V &c, float ba, float bb, float bc)
@@ -55,20 +37,20 @@ V lerpVarying(const V &a, const V &b, const V &c, float ba, float bb, float bc)
     return result;
 }
 
-// 透视正确插值：将 varying/w 插值后再除以 1/w
-// 跳过前 4 个 float（clipPos），由调用方单独处理
+// Perspective-correct interpolation: interpolate varying/w then divide by interpolated 1/w.
+// Skips the first 4 floats (clipPos); caller handles them separately.
 template <typename V>
 V perspectiveCorrectLerp(const V &a, const V &b, const V &c, float wa, float wb, float wc, float ba,
                          float bb, float bc)
 {
-    // 各顶点的 1/w
+    // Per-vertex 1/w
     float iwa = 1.f / wa, iwb = 1.f / wb, iwc = 1.f / wc;
 
-    // 插值后的 1/w
+    // Interpolated 1/w
     float iw = iwa * ba + iwb * bb + iwc * bc;
     if (std::fabs(iw) < 1e-7f) iw = 1e-7f;
 
-    // 对每个 float 成员（跳过前 4 个 clipPos，由调用方覆写）
+    // For each float member (skip first 4: clipPos, overwritten by caller)
     constexpr size_t N = sizeof(V) / sizeof(float);
     V result{};
     const float *fa = reinterpret_cast<const float *>(&a);
@@ -82,15 +64,15 @@ V perspectiveCorrectLerp(const V &a, const V &b, const V &c, float wa, float wb,
     return result;
 }
 
-// edge function（有符号面积 × 2）
+// Edge function (signed area × 2)
 inline float edgeFunc(float ax, float ay, float bx, float by, float px, float py)
 {
     return (bx - ax) * (py - ay) - (by - ay) * (px - ax);
 }
 
-// Sutherland-Hodgman 单平面裁剪
-// 平面方程：a*x + b*y + c*z + d*w >= 0 为内侧
-// 要求 V 是 standard-layout 且第一字段为 vec4 clipPos
+// Sutherland-Hodgman single-plane clipping.
+// Plane equation: a*x + b*y + c*z + d*w >= 0 is inside.
+// Requires V to be standard-layout with vec4 clipPos as the first field.
 template <typename V>
 std::vector<V> clipPolygonAgainstPlane(const std::vector<V> &poly, float a, float b, float c,
                                        float d)
@@ -107,7 +89,7 @@ std::vector<V> clipPolygonAgainstPlane(const std::vector<V> &poly, float a, floa
         float dn = a * cn.x + b * cn.y + c * cn.z + d * cn.w;
         if (dc >= 0.f) out.push_back(curr);
         if ((dc >= 0.f) != (dn >= 0.f)) {
-            // 交点：线性插值所有 float 字段
+            // Intersection: linearly interpolate all float fields
             float t = dc / (dc - dn);
             constexpr size_t N = sizeof(V) / sizeof(float);
             V interp{};
@@ -124,17 +106,17 @@ std::vector<V> clipPolygonAgainstPlane(const std::vector<V> &poly, float a, floa
 }  // namespace detail
 
 // ─────────────────────────────────────────────
-//  detail::ThreadPool — 固定大小线程池
-//  工作线程在内部循环等待任务，通过条件变量唤醒
-//  runAndWait() 提交一批任务并阻塞直到全部完成
-//  注意：同一 Pipeline 对象不应从多个线程同时调用 draw()
+//  detail::ThreadPool — Fixed-size thread pool.
+//  Worker threads spin in an internal loop waiting for tasks, woken via condition variable.
+//  runAndWait() submits a batch of tasks and blocks until all are complete.
+//  Note: do not call draw() on the same Pipeline from multiple threads simultaneously.
 // ─────────────────────────────────────────────
 namespace detail {
 
 class ThreadPool
 {
 public:
-    // 创建 n 个工作线程（调用方/主线程额外参与，共 n+1 个并发执行者）
+    // Create n worker threads (caller/main thread also participates: n+1 total concurrent)
     explicit ThreadPool(unsigned int n) : stop_(false), generation_(0), doneCount_(0)
     {
         workers_.reserve(n);
@@ -152,8 +134,8 @@ public:
         for (auto &w : workers_) w.join();
     }
 
-    // 将 numItems 个工作项 [0, numItems) 分配给工作线程和主线程并发执行
-    // fn(i) 会被主线程与所有工作线程并发调用；函数返回时所有工作项已完成
+    // Distribute numItems work items [0, numItems) to worker threads and the main thread.
+    // fn(i) is called concurrently by the main thread and all workers; returns when all items are done.
     void runAndWait(int numItems, const std::function<void(int)> &fn)
     {
         if (numItems <= 0) return;
@@ -165,8 +147,8 @@ public:
             doneCount_ = 0;
             ++generation_;
         }
-        startCv_.notify_all();  // 唤醒所有工作线程
-        drainItems();           // 主线程参与消费工作项，不再空转等待
+        startCv_.notify_all();  // wake all workers
+        drainItems();           // main thread also consumes tasks instead of spinning
         std::unique_lock<std::mutex> lk(mu_);
         doneCv_.wait(lk, [this] { return doneCount_ == (int) workers_.size(); });
     }
@@ -179,18 +161,18 @@ public:
 private:
     std::vector<std::thread> workers_;
     std::mutex mu_;
-    std::condition_variable startCv_;  // 工作线程等待新批次
-    std::condition_variable doneCv_;   // 主线程等待批次完成
+    std::condition_variable startCv_;  // workers wait for a new batch
+    std::condition_variable doneCv_;   // main thread waits for batch completion
     bool stop_;
     int generation_;
     int doneCount_;
 
-    // 原子工作计数器：线程用 fetch_add 无锁抢任务
+    // Atomic work counter: threads claim tasks lock-free via fetch_add
     std::atomic<int> nextItem_{0};
     int totalItems_{0};
     const std::function<void(int)> *batchFn_{nullptr};
 
-    // 主线程和工作线程共用：原子递增抢任务，直到耗尽
+    // Shared by main and worker threads: atomically claim tasks until exhausted
     void drainItems()
     {
         int id;
@@ -220,39 +202,39 @@ private:
 }  // namespace detail
 
 // ─────────────────────────────────────────────
-//  TriangleData：顶点着色后的三角形数据（供光栅化阶段使用）
+//  TriangleData: post-vertex-shader triangle data (used by the rasterization stage)
 //
-//  增量字段说明：
+//  Incremental field notes:
 //    edgeFunc(ax,ay,bx,by,px,py) = (bx-ax)*(py-ay) - (by-ay)*(px-ax)
-//    ∂/∂px = -(by-ay)   ∂/∂py = (bx-ax)  → 每行/每列只需做加法
-//    ndcZ = invArea*(nz0*e0+nz1*e1+nz2*e2) → 同样线性可步进
+//    ∂/∂px = -(by-ay)   ∂/∂py = (bx-ax)  → per-row/per-column update is a single add
+//    ndcZ = invArea*(nz0*e0+nz1*e1+nz2*e2) → also linearly steppable
 // ─────────────────────────────────────────────
 template <typename Varying>
 struct TriangleData {
     Varying v0, v1, v2;
-    // 屏幕坐标
+    // screen-space coordinates
     float sx0, sy0;
     float sx1, sy1;
     float sx2, sy2;
-    // NDC z（顶点）
+    // NDC z (per vertex)
     float nz0, nz1, nz2;
-    // clip space w（透视正确插值用）
+    // clip-space w (for perspective-correct interpolation)
     float w0, w1, w2;
     float invArea;
-    // 包围盒
+    // bounding box
     int minX, maxX, minY, maxY;
 
-    // ── 预计算增量字段（光栅化内层循环用）──
-    // edge function 在 px/py 方向的步长
+    // ── precomputed incremental fields (used in the rasterization inner loop) ──
+    // edge function step per pixel in x and y
     float dE0dx, dE1dx, dE2dx;
     float dE0dy, dE1dy, dE2dy;
-    // 在 (minX+0.5, minY+0.5) 处的 edge 初始值
+    // edge function values at (minX+0.5, minY+0.5)
     float e0Start, e1Start, e2Start;
-    // ndcZ 步长及起点值（ndcZ = invArea*(nz0*e0+nz1*e1+nz2*e2)，线性）
+    // ndcZ step and start value (ndcZ = invArea*(nz0*e0+nz1*e1+nz2*e2), linear)
     float dNdcZdx, dNdcZdy, ndcZStart;
-    // inside 测试方向：invArea<0 时 inside ⟺ 所有 ei≤0
+    // inside test direction: when invArea<0, inside ⟺ all ei≤0
     bool insideNeg;
-    // 线框模式：各边屏幕空间长度（用于边距离计算）
+    // wireframe: screen-space length of each edge (for distance-to-edge calculation)
     float edgeLen01, edgeLen12, edgeLen20;
 };
 
@@ -266,21 +248,21 @@ public:
     using VertexShader = std::function<Varying(const Vertex &)>;
     using FragmentShader = std::function<vec4(const Varying &)>;
 
-    // 背面剔除开关（默认开启，剔除顺时针面）
+    // Back-face culling toggle (default: on; culls clockwise faces)
     bool cullBackFace = true;
-    // 深度测试开关（默认开启）
+    // Depth test toggle (default: on)
     bool depthTestEnabled = true;
-    // 深度写入开关（默认开启；关闭时仅测试不写入，适合半透明渲染）
+    // Depth write toggle (default: on; disable for transparent passes: test but no write)
     bool depthWriteEnabled = true;
-    // 线框渲染模式（默认关闭；开启时仅绘制边缘像素）
+    // Wireframe rendering mode (default: off; draws edge pixels only)
     bool wireframe = false;
-    // 线框宽度（单位：像素，默认 1）
+    // Wireframe line width in pixels (default: 1)
     float wireframeWidth = 1.0f;
-    // Alpha Blending：src_over 合成 dst = src·α + dst·(1-α)（默认关闭）
-    // 注意：正确的半透明渲染需要从后往前排序，管线不自动排序
+    // Alpha blending: src_over composite dst = src·α + dst·(1-α) (default: off)
+    // Note: correct transparent rendering requires back-to-front sorting; the pipeline does not sort automatically.
     bool blendEnabled = false;
-    // 并行线程数（0 或 1 为单线程，>1 按行分块并行）
-    // 默认取全部硬件核心数，充分利用 CPU
+    // Number of parallel threads (0 or 1 = single-threaded, >1 = row-parallel)
+    // Defaults to all hardware threads to fully utilise the CPU.
     unsigned int threadCount = std::max(1u, std::thread::hardware_concurrency());
 
     void setVertexShader(VertexShader vs)
@@ -292,20 +274,20 @@ public:
         fragmentShader = std::move(fs);
     }
 
-    // 绘制三角形列表
-    // vertices: 顶点数组
-    // indices:  索引数组，每 3 个构成一个三角形
-    // fb:       目标帧缓冲
+    // Draw a triangle list.
+    // vertices: vertex array
+    // indices:  index array; every 3 indices form one triangle
+    // fb:       target framebuffer
     void draw(const std::vector<Vertex> &vertices, const std::vector<int> &indices,
               Framebuffer &fb) const
     {
         if (!vertexShader || !fragmentShader) return;
 
-        // 1. 顶点着色（单线程，避免 lambda capture 竞争）
+        // 1. Vertex shading (single-threaded to avoid lambda-capture races)
         std::vector<Varying> varyings(vertices.size());
         for (size_t i = 0; i < vertices.size(); ++i) varyings[i] = vertexShader(vertices[i]);
 
-        // 2. 几何处理：裁剪 / 透视除法 / 视口变换 / 背面剔除 → 收集有效三角形
+        // 2. Geometry processing: clip / perspective divide / viewport transform / back-face cull → collect valid triangles
         using Tri = TriangleData<Varying>;
         std::vector<Tri> tris;
         tris.reserve(indices.size() / 3);
@@ -315,14 +297,14 @@ public:
 
         size_t triCount = indices.size() / 3;
         for (size_t t = 0; t < triCount; ++t) {
-            // Sutherland-Hodgman 齐次空间多边形裁剪（6个裁剪平面）
+            // Sutherland-Hodgman homogeneous-space polygon clipping (6 planes)
             static constexpr float kPlanes[6][4] = {
-                {1, 0, 0, 1},   // 左：x + w >= 0
-                {-1, 0, 0, 1},  // 右：-x + w >= 0
-                {0, 1, 0, 1},   // 下：y + w >= 0
-                {0, -1, 0, 1},  // 上：-y + w >= 0
-                {0, 0, 1, 1},   // 近：z + w >= 0
-                {0, 0, -1, 1},  // 远：-z + w >= 0
+                {1, 0, 0, 1},   // left:  x + w >= 0
+                {-1, 0, 0, 1},  // right: -x + w >= 0
+                {0, 1, 0, 1},   // bottom: y + w >= 0
+                {0, -1, 0, 1},  // top:   -y + w >= 0
+                {0, 0, 1, 1},   // near:   z + w >= 0
+                {0, 0, -1, 1},  // far:   -z + w >= 0
             };
             std::vector<Varying> poly = {varyings[indices[t * 3 + 0]], varyings[indices[t * 3 + 1]],
                                          varyings[indices[t * 3 + 2]]};
@@ -331,7 +313,7 @@ public:
                                                        kPlanes[p][2], kPlanes[p][3]);
             if (poly.size() < 3) continue;
 
-            // Fan 三角化：(poly[0], poly[f], poly[f+1])
+            // Fan triangulation: (poly[0], poly[f], poly[f+1])
             for (size_t f = 1; f + 1 < poly.size(); ++f) {
                 const Varying &va = poly[0];
                 const Varying &vb = poly[f];
@@ -341,16 +323,16 @@ public:
                 vec4 c1 = getClipPos(vb);
                 vec4 c2 = getClipPos(vc);
 
-                // 裁剪后 w 应 > 0，防御极小值
+                // Guard against near-zero w after clipping
                 if (c0.w < 1e-7f || c1.w < 1e-7f || c2.w < 1e-7f) continue;
 
-                // 透视除法 → NDC
+                // Perspective divide → NDC
                 float iw0 = 1.f / c0.w, iw1 = 1.f / c1.w, iw2 = 1.f / c2.w;
                 float nx0 = c0.x * iw0, ny0 = c0.y * iw0, nz0 = c0.z * iw0;
                 float nx1 = c1.x * iw1, ny1 = c1.y * iw1, nz1 = c1.z * iw1;
                 float nx2 = c2.x * iw2, ny2 = c2.y * iw2, nz2 = c2.z * iw2;
 
-                // 视口变换
+                // Viewport transform
                 float sx0 = (nx0 + 1.f) * hw;
                 float sy0 = (1.f - ny0) * hh;
                 float sx1 = (nx1 + 1.f) * hw;
@@ -358,12 +340,12 @@ public:
                 float sx2 = (nx2 + 1.f) * hw;
                 float sy2 = (1.f - ny2) * hh;
 
-                // 背面剔除
+                // Back-face culling
                 float area = detail::edgeFunc(sx0, sy0, sx1, sy1, sx2, sy2);
                 if (cullBackFace && area >= 0.f) continue;
                 if (std::fabs(area) < 1e-5f) continue;
 
-                // 包围盒（裁剪到帧缓冲范围）
+                // AABB clipped to framebuffer bounds
                 int minX = std::max(0, static_cast<int>(std::floor(std::min({sx0, sx1, sx2}))));
                 int maxX =
                     std::min(fb.width - 1, static_cast<int>(std::ceil(std::max({sx0, sx1, sx2}))));
@@ -375,7 +357,7 @@ public:
                 tris.push_back(Tri{va,  vb,  vc,   sx0,  sy0,  sx1,        sy1,  sx2,  sy2,  nz0,
                                    nz1, nz2, c0.w, c1.w, c2.w, 1.f / area, minX, maxX, minY, maxY});
 
-                // 预计算增量字段
+                // Precompute incremental fields
                 {
                     Tri &tr = tris.back();
                     tr.dE0dx = -(sy2 - sy1);
@@ -397,7 +379,7 @@ public:
                     tr.ndcZStart = ia * (nz0 * tr.e0Start + nz1 * tr.e1Start + nz2 * tr.e2Start);
                     tr.insideNeg = (tr.invArea < 0.f);
 
-                    // 线框模式：预计算各边屏幕空间长度
+                    // Wireframe: precompute screen-space edge lengths
                     tr.edgeLen01 = std::sqrt((sx1 - sx0) * (sx1 - sx0) + (sy1 - sy0) * (sy1 - sy0));
                     tr.edgeLen12 = std::sqrt((sx2 - sx1) * (sx2 - sx1) + (sy2 - sy1) * (sy2 - sy1));
                     tr.edgeLen20 = std::sqrt((sx0 - sx2) * (sx0 - sx2) + (sy0 - sy2) * (sy0 - sy2));
@@ -407,19 +389,19 @@ public:
 
         if (tris.empty()) return;
 
-        // 3. 光栅化：细粒度 tile 任务，主线程参与 + nWorkers 个工作线程
-        //    原子计数器抢任务，自动负载均衡（无论同构全大核还是异构 P/E 核均有效）
-        unsigned int nTotal = std::max(1u, threadCount);  // 含主线程的总并发数
-        unsigned int nWorkers = nTotal - 1;               // 线程池工作线程数
+        // 3. Rasterization: fine-grained tile tasks; main thread participates alongside nWorkers worker threads.
+        //    Atomic counter for task claiming gives automatic load balancing (works for homogeneous and P/E-core architectures).
+        unsigned int nTotal = std::max(1u, threadCount);  // total concurrency including main thread
+        unsigned int nWorkers = nTotal - 1;               // thread pool worker count
 
         if (nWorkers == 0) {
             rasterizeRows(tris, fb, 0, fb.height - 1);
         } else {
-            // 懒惰初始化：首次 draw() 或 threadCount 变化时重建线程池
+            // Lazy init: rebuild thread pool on first draw() or when threadCount changes
             if (!pool_ || pool_->size() != nWorkers) pool_.reset(new detail::ThreadPool(nWorkers));
 
-            // 细粒度任务：nTotal×16 个任务，减少尾延迟，对任何多核架构均有效
-            // 例：16 线程 × 1080 行 → rowsPerTask=4, numTasks=270
+            // Fine-grained tasks: nTotal×16 tasks to reduce tail latency; effective for any multi-core topology.
+            // Example: 16 threads × 1080 rows → rowsPerTask=4, numTasks=270
             int rowsPerTask = std::max(1, fb.height / (static_cast<int>(nTotal) * 16));
             int numTasks = (fb.height + rowsPerTask - 1) / rowsPerTask;
 
@@ -437,10 +419,10 @@ private:
     VertexShader vertexShader;
     FragmentShader fragmentShader;
 
-    // 线程池：懒惰初始化，threadCount 变化时自动重建
+    // Thread pool: lazily initialised, rebuilt when threadCount changes
     mutable std::unique_ptr<detail::ThreadPool> pool_;
 
-    // 通过成员指针读取 clipPos（要求 Varying 第一个字段为 vec4 clipPos）
+    // Read clipPos via member pointer (Varying must have vec4 clipPos as its first field)
     static const vec4 &getClipPos(const Varying &v)
     {
         return *reinterpret_cast<const vec4 *>(&v);
@@ -450,20 +432,20 @@ private:
         return *reinterpret_cast<vec4 *>(&v);
     }
 
-    // 光栅化指定行范围 [rowStart, rowEnd]（闭区间）
-    // 各线程行范围不重叠，故对 fb 的读写无竞争
-    // 内层循环使用增量步进：每像素 3 次加法替代 3 次 edgeFunc 计算
+    // Rasterize row range [rowStart, rowEnd] (inclusive).
+    // Thread row ranges are non-overlapping, so reads/writes to fb are race-free.
+    // Inner loop uses incremental stepping: 3 additions per pixel instead of 3 edgeFunc calls.
     using Tri = TriangleData<Varying>;
     void rasterizeRows(const std::vector<Tri> &tris, Framebuffer &fb, int rowStart,
                        int rowEnd) const
     {
         for (const Tri &tri : tris) {
-            // 当前线程负责的行与三角形包围盒的交集
+            // Intersect this thread's row range with the triangle's bounding box
             int minY = std::max(tri.minY, rowStart);
             int maxY = std::min(tri.maxY, rowEnd);
             if (minY > maxY) continue;
 
-            // 从包围盒起点步进到当前线程首行
+            // Step edge values from the bounding-box origin to this thread's first row
             int rowOff = minY - tri.minY;
             float rowOff_f = static_cast<float>(rowOff);
             float e0_row = tri.e0Start + tri.dE0dy * rowOff_f;
@@ -477,12 +459,12 @@ private:
 
                 for (int px = tri.minX; px <= tri.maxX;
                      ++px, e0 += tri.dE0dx, e1 += tri.dE1dx, e2 += tri.dE2dx, ndcZ += tri.dNdcZdx) {
-                    // inside 测试（无乘法）
+                    // Inside test (no multiply)
                     if (tri.insideNeg ? (e0 > 0.f || e1 > 0.f || e2 > 0.f)
                                       : (e0 < 0.f || e1 < 0.f || e2 < 0.f))
                         continue;
 
-                    // 线框模式：仅绘制距各边不超过 wireframeWidth 像素的像素
+                    // Wireframe: skip pixels farther than wireframeWidth from any edge
                     if (wireframe) {
                         float d0 = std::fabs(e0) / (tri.edgeLen12 + 1e-6f);
                         float d1 = std::fabs(e1) / (tri.edgeLen20 + 1e-6f);
@@ -490,17 +472,17 @@ private:
                         if (std::min({d0, d1, d2}) > wireframeWidth) continue;
                     }
 
-                    // 深度先行，跳过被遮挡像素的 varying 计算
+                    // Early depth test: skip occluded pixels before computing varyings
                     float depth = ndcZ * 0.5f + 0.5f;
                     if (depthTestEnabled && !fb.rawDepthTest(px, py, depth, depthWriteEnabled))
                         continue;
 
-                    // 重心坐标
+                    // Barycentric coordinates
                     float ba = e0 * tri.invArea;
                     float bb = e1 * tri.invArea;
                     float bc = e2 * tri.invArea;
 
-                    // 透视正确 Varying 插值（跳过 clipPos，由下方覆写）
+                    // Perspective-correct varying interpolation (clipPos overwritten below)
                     Varying frag = detail::perspectiveCorrectLerp(tri.v0, tri.v1, tri.v2, tri.w0,
                                                                   tri.w1, tri.w2, ba, bb, bc);
                     getClipPos(frag) = {getClipPos(tri.v0).x * ba + getClipPos(tri.v1).x * bb +
@@ -509,7 +491,7 @@ private:
                                             getClipPos(tri.v2).y * bc,
                                         ndcZ, tri.w0 * ba + tri.w1 * bb + tri.w2 * bc};
 
-                    // Alpha Blending（src_over）
+                    // Alpha blending (src_over)
                     vec4 color = fragmentShader(frag);
                     if (blendEnabled) {
                         vec4 dst = fb.rawGetPixel(px, py);

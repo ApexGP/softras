@@ -63,7 +63,7 @@ pipe.wireframe      = false;     // 默认关
 pipe.wireframeWidth = 1.0f;      // 线框像素宽度
 
 // 多线程
-pipe.threadCount = 0;            // 0 = 自动（hardware_concurrency），1 = 单线程
+pipe.threadCount = 4;            // 默认值为 hardware_concurrency()（全核），1 = 强制单线程
 ```
 
 ---
@@ -109,7 +109,11 @@ pipe.draw(vertices, indices, fb);
 ## 输出图像
 
 ```cpp
+// 保存为文件
 fb.savePPM("output.ppm");
+
+// 写入已打开的文件流（适合 pipe 输出）
+fb.writePPM(fp);  // fp 为 FILE*，调用方负责打开/关闭
 ```
 
 ---
@@ -117,8 +121,14 @@ fb.savePPM("output.ppm");
 ## 纹理采样
 
 ```cpp
+// 从 RGBA 字节数组创建（每像素 4 字节）
+Texture2D tex = Texture2D::fromRGBA8(width, height, rgbaData);
+
 // 从 RGB 字节数组创建纹理
 Texture2D tex = Texture2D::fromRGB8(width, height, rgbData);
+
+// 从 vec4 浮点数组创建（float，行主序）
+Texture2D tex = Texture2D::fromVec4(width, height, vec4Data);
 
 // 基础双线性采样（无 mipmap）
 tex.sample(f.uv);

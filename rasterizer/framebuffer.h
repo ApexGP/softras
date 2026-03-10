@@ -1,4 +1,4 @@
-// rasterizer/framebuffer.h — 帧缓冲（颜色 + 深度）
+// rasterizer/framebuffer.h — Framebuffer (color + depth)
 #pragma once
 #include <algorithm>
 #include <cmath>
@@ -21,15 +21,15 @@ public:
     {
     }
 
-    // 清空颜色和深度缓冲
+    // Clear color and depth buffers
     void clear(vec4 color = vec4(0.f, 0.f, 0.f, 1.f), float depth = 1.f)
     {
         std::fill(colorBuf.begin(), colorBuf.end(), color);
         std::fill(depthBuf.begin(), depthBuf.end(), depth);
     }
 
-    // 深度测试：若 z 小于当前深度则通过
-    // write=true（默认）时同时更新深度缓冲；write=false 时仅测试（适合半透明渲染）
+    // Depth test: passes if z is less than the current depth value.
+    // When write=true (default) the depth buffer is updated on pass; write=false tests only (useful for transparent rendering).
     bool depthTest(int x, int y, float z, bool write = true)
     {
         if (x < 0 || x >= width || y < 0 || y >= height) return false;
@@ -41,7 +41,7 @@ public:
         return false;
     }
 
-    // 无边界检查版本（仅供光栅器内部使用，调用方须保证坐标合法）
+    // No-bounds-check variant (internal rasterizer use only; caller must guarantee valid coords)
     inline bool rawDepthTest(int x, int y, float z, bool write = true)
     {
         float &cur = depthBuf[static_cast<size_t>(y * width + x)];
@@ -74,8 +74,8 @@ public:
         return colorBuf[static_cast<size_t>(y * width + x)];
     }
 
-    // 保存为 PPM P6 二进制文件
-    // 整帧一次性转换 + 单次 fwrite，减少系统调用次数
+    // Save as PPM P6 binary file.
+    // Converts the entire frame to an RGB8 byte array in one pass, then writes it with a single fwrite.
     bool savePPM(const std::string &path) const
     {
         FILE *f = std::fopen(path.c_str(), "wb");
@@ -88,7 +88,7 @@ public:
         return ok;
     }
 
-    // 将一帧 PPM 写入已打开的文件流（供 pipe 模式使用）
+    // Write one PPM frame to an already-open file stream (for pipe/streaming output)
     bool writePPM(FILE *f) const
     {
         std::fprintf(f, "P6\n%d %d\n255\n", width, height);

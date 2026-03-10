@@ -1,4 +1,4 @@
-// rasterizer/texture.h — 2D 纹理，支持双线性采样
+// rasterizer/texture.h — 2D texture with bilinear sampling
 #pragma once
 #include <algorithm>
 #include <cmath>
@@ -13,7 +13,7 @@ public:
 
     Texture2D() = default;
 
-    // 从 RGBA unsigned char 数组创建（每像素 4 字节，行主序）
+    // Create from RGBA unsigned char array (4 bytes per pixel, row-major)
     static Texture2D fromRGBA8(int w, int h, const unsigned char *data)
     {
         Texture2D tex;
@@ -27,7 +27,7 @@ public:
         return tex;
     }
 
-    // 从 RGB unsigned char 数组创建（每像素 3 字节）
+    // Create from RGB unsigned char array (3 bytes per pixel)
     static Texture2D fromRGB8(int w, int h, const unsigned char *data)
     {
         Texture2D tex;
@@ -41,7 +41,7 @@ public:
         return tex;
     }
 
-    // 从 vec4 数组创建（float，行主序）
+    // Create from vec4 float array (row-major)
     static Texture2D fromVec4(int w, int h, const vec4 *data)
     {
         Texture2D tex;
@@ -51,15 +51,15 @@ public:
         return tex;
     }
 
-    // 双线性采样，UV 范围 [0,1]，边界采用 repeat wrap
+    // Bilinear sampling; UV in [0,1]; boundary uses repeat wrap
     vec4 sample(vec2 uv) const
     {
-        if (pixels.empty()) return {1.f, 0.f, 1.f, 1.f};  // 错误颜色：洋红
+        if (pixels.empty()) return {1.f, 0.f, 1.f, 1.f};  // error color: magenta
         return bilinear(pixels, width, height, uv);
     }
 
-    // 生成完整 mipmap 链（需在创建纹理后、首次采样前调用）
-    // 每级为上一级 2×2 均值下采样，直到 1×1
+    // Generate full mipmap chain (call after creation, before first sample).
+    // Each level is a 2×2 average downsample of the previous, down to 1×1.
     void generateMipmaps()
     {
         mips_.clear();
@@ -75,7 +75,7 @@ public:
             std::vector<vec4> level(static_cast<size_t>(dw * dh));
             for (int y = 0; y < dh; ++y) {
                 for (int x = 0; x < dw; ++x) {
-                    // 四邻居均值（处理奇数尺寸时边界重复）
+                    // Average of four neighbors (border clamped for odd dimensions)
                     int x1 = std::min(x * 2, sw - 1);
                     int x2 = std::min(x * 2 + 1, sw - 1);
                     int y1 = std::min(y * 2, sh - 1);
@@ -94,9 +94,7 @@ public:
         }
     }
 
-    // 三线性采样（需先调用 generateMipmaps）
-    // lod=0 等同于 sample()；lod 越大采样越模糊
-    // 若未生成 mipmap，则退化为 sample()
+    // Trilinear sampling; lod is a floating-point mip level (requires generateMipmaps; falls back to sample() if mipmaps absent)
     vec4 sampleLod(vec2 uv, float lod) const
     {
         if (pixels.empty()) return {1.f, 0.f, 1.f, 1.f};
@@ -107,7 +105,7 @@ public:
         int level1 = level0 + 1;
         float t = flod - static_cast<float>(level0);
 
-        // level0 采样
+        // sample level0
         vec4 c0;
         if (level0 == 0) {
             c0 = bilinear(pixels, width, height, uv);
@@ -117,13 +115,13 @@ public:
         }
         if (t < 1e-4f) return c0;
 
-        // level1 采样（三线性）
+        // sample level1 (trilinear blend)
         vec4 c1;
         int l1 = level1 - 1;
         if (l1 < static_cast<int>(mips_.size())) {
             c1 = bilinear(mips_[l1], mipW_[l1], mipH_[l1], uv);
         } else {
-            // 超出最大层，取最小 mip
+            // beyond max level: clamp to smallest mip
             int last = static_cast<int>(mips_.size()) - 1;
             c1 = bilinear(mips_[last], mipW_[last], mipH_[last], uv);
         }
@@ -132,11 +130,11 @@ public:
 
 private:
     std::vector<vec4> pixels;
-    // mipmap 链：mips_[0] 为第 1 级（width/2 × height/2），依此类推
+    // mipmap chain: mips_[0] is level 1 (width/2 × height/2), and so on
     std::vector<std::vector<vec4>> mips_;
     std::vector<int> mipW_, mipH_;
 
-    // 双线性采样辅助（对任意层）
+    // Bilinear sampling helper (works on any mip level)
     static vec4 bilinear(const std::vector<vec4> &buf, int w, int h, vec2 uv)
     {
         float u = uv.x - std::floor(uv.x);

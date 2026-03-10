@@ -1,4 +1,4 @@
-// rasterizer/math.h — GLSL 风格向量/矩阵数学库
+// rasterizer/math.h — GLSL-style vector/matrix math library
 #pragma once
 #include <algorithm>
 #include <cmath>
@@ -235,7 +235,7 @@ inline vec4 &operator/=(vec4 &a, float s)
 }
 
 // ─────────────────────────────────────────────
-//  mat4  (列主序，与 OpenGL/GLSL 一致)
+//  mat4  (column-major, consistent with OpenGL/GLSL)
 // ─────────────────────────────────────────────
 struct mat4 {
     float m[4][4] = {};  // m[col][row]
@@ -268,7 +268,7 @@ inline mat4 operator*(const mat4 &A, const mat4 &B)
 }
 
 // ─────────────────────────────────────────────
-//  常用矩阵构造
+//  Common matrix constructors
 // ─────────────────────────────────────────────
 inline mat4 translate(vec3 t)
 {
@@ -288,7 +288,7 @@ inline mat4 scale(vec3 s)
     return M;
 }
 
-// 绕任意轴旋转（角度单位：弧度）
+// Rotation around an arbitrary axis (angle in radians)
 inline mat4 rotate(float angle, vec3 axis)
 {
     float c = std::cos(angle), s = std::sin(angle);
@@ -309,7 +309,7 @@ inline mat4 rotate(float angle, vec3 axis)
     return M;
 }
 
-// 透视投影（fovY 弧度，aspect = w/h，near/far 为正值）
+// Perspective projection (fovY in radians, aspect = w/h, near/far are positive)
 inline mat4 perspective(float fovY, float aspect, float near, float far)
 {
     float f = 1.f / std::tan(fovY * 0.5f);
@@ -322,7 +322,7 @@ inline mat4 perspective(float fovY, float aspect, float near, float far)
     return M;
 }
 
-// 视图矩阵（lookAt）
+// View matrix (lookAt)
 inline mat4 lookAt(vec3 eye, vec3 center, vec3 up)
 {
     auto norm3 = [](vec3 v) -> vec3 {
@@ -353,7 +353,7 @@ inline mat4 lookAt(vec3 eye, vec3 center, vec3 up)
 }
 
 // ─────────────────────────────────────────────
-//  标量/向量数学函数（GLSL 风格）
+//  Scalar/vector math functions (GLSL-style)
 // ─────────────────────────────────────────────
 inline float clamp(float v, float lo, float hi)
 {
@@ -475,7 +475,7 @@ inline vec3 pow(vec3 v, float p)
     return {std::pow(v.x, p), std::pow(v.y, p), std::pow(v.z, p)};
 }
 
-// swizzle 辅助（保留旧代码兼容）
+// Swizzle helpers (kept for legacy compatibility)
 inline vec4 swizzle_xyyx(vec2 v)
 {
     return {v.x, v.y, v.y, v.x};

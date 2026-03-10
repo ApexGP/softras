@@ -1,5 +1,5 @@
-// demo/cube.cpp — 旋转 3D 立方体 Demo
-// 演示完整 3D 管线：mat4 MVP 变换 + 深度测试 + Phong 光照
+// demo/cube.cpp — Rotating 3D cube demo
+// Demonstrates the full 3D pipeline: mat4 MVP transform + depth test + Phong lighting
 
 #include <cmath>
 #include <cstdio>
@@ -10,45 +10,51 @@
 #include "../rasterizer/math.h"
 #include "../rasterizer/pipeline.h"
 
-// ── 顶点格式 ──────────────────────────────────
+// ── Vertex format ─────────────────────────────
 struct CubeVertex {
-    vec3 pos;     // 模型空间位置
-    vec3 normal;  // 模型空间法线
-    vec3 color;   // 顶点颜色
+    vec3 pos;     // model-space position
+    vec3 normal;  // model-space normal
+    vec3 color;   // vertex color
 };
 
-// ── Varying 格式（第一个字段必须是 clipPos）──
+// ── Varying format (first field must be clipPos) ──
 struct CubeVarying {
-    vec4 clipPos;   // clip space 位置（管线使用，必须第一个）
-    vec3 worldPos;  // 世界空间位置（用于光照）
-    vec3 normal;    // 世界空间法线
-    vec3 color;     // 插值颜色
+    vec4 clipPos;   // clip-space position (used by pipeline; must be first)
+    vec3 worldPos;  // world-space position (for lighting)
+    vec3 normal;    // world-space normal
+    vec3 color;     // interpolated color
 };
 
-// ── 立方体几何数据 ─────────────────────────────
-// 每面 2 个三角形，共 6 面 × 2 = 12 个三角形
+// ── Cube geometry ──────────────────────────────
+// 6 faces × 2 triangles = 12 triangles total
 static std::vector<CubeVertex> makeCubeVertices()
 {
-    // 6 个面，每面 4 顶点，逆时针排列（从外面看）
-    // 面法线：+X -X +Y -Y +Z -Z
+    // 6 faces, 4 vertices each, CCW winding (viewed from outside)
+    // Face normals: +X -X +Y -Y +Z -Z
     struct Face {
         vec3 n;
         vec3 verts[4];
         vec3 col;
     };
     const Face faces[] = {
-        {{1, 0, 0}, {{1, -1, -1}, {1, 1, -1}, {1, 1, 1}, {1, -1, 1}}, {0.9f, 0.3f, 0.3f}},  // +X 红
+        {{1, 0, 0},
+         {{1, -1, -1}, {1, 1, -1}, {1, 1, 1}, {1, -1, 1}},
+         {0.9f, 0.3f, 0.3f}},  // +X red
         {{-1, 0, 0},
          {{-1, -1, 1}, {-1, 1, 1}, {-1, 1, -1}, {-1, -1, -1}},
-         {0.3f, 0.9f, 0.3f}},                                                               // -X 绿
-        {{0, 1, 0}, {{-1, 1, -1}, {-1, 1, 1}, {1, 1, 1}, {1, 1, -1}}, {0.3f, 0.3f, 0.9f}},  // +Y 蓝
+         {0.3f, 0.9f, 0.3f}},  // -X green
+        {{0, 1, 0},
+         {{-1, 1, -1}, {-1, 1, 1}, {1, 1, 1}, {1, 1, -1}},
+         {0.3f, 0.3f, 0.9f}},  // +Y blue
         {{0, -1, 0},
          {{-1, -1, 1}, {-1, -1, -1}, {1, -1, -1}, {1, -1, 1}},
-         {0.9f, 0.9f, 0.3f}},                                                               // -Y 黄
-        {{0, 0, 1}, {{-1, -1, 1}, {1, -1, 1}, {1, 1, 1}, {-1, 1, 1}}, {0.3f, 0.9f, 0.9f}},  // +Z 青
+         {0.9f, 0.9f, 0.3f}},  // -Y yellow
+        {{0, 0, 1},
+         {{-1, -1, 1}, {1, -1, 1}, {1, 1, 1}, {-1, 1, 1}},
+         {0.3f, 0.9f, 0.9f}},  // +Z cyan
         {{0, 0, -1},
          {{1, -1, -1}, {-1, -1, -1}, {-1, 1, -1}, {1, 1, -1}},
-         {0.9f, 0.3f, 0.9f}},  // -Z 紫
+         {0.9f, 0.3f, 0.9f}},  // -Z magenta
     };
 
     std::vector<CubeVertex> verts;
@@ -60,7 +66,7 @@ static std::vector<CubeVertex> makeCubeVertices()
     return verts;
 }
 
-// 每面 4 顶点，产生 2 个三角形（CCW）
+// 4 vertices per face → 2 triangles (CCW)
 static std::vector<int> makeCubeIndices()
 {
     std::vector<int> idx;
@@ -80,7 +86,7 @@ int main(int argc, char *argv[])
     const int kFrames = kSeconds * static_cast<int>(kFPS);
     const float kAspect = static_cast<float>(kWidth) / static_cast<float>(kHeight);
 
-    // ── 场景参数 ──────────────────────────────────
+    // ── Scene parameters ───────────────────────────
     const vec3 kLightDir = normalize(vec3{1.f, 2.f, 3.f});
     const vec3 kAmbient = {0.15f, 0.15f, 0.18f};
     const vec3 kCamPos = {0.f, 0.f, 4.5f};
@@ -91,7 +97,7 @@ int main(int argc, char *argv[])
     auto cubeVerts = makeCubeVertices();
     auto cubeIndices = makeCubeIndices();
 
-    // ── 构建管线 ──────────────────────────────────
+    // ── Build pipeline ─────────────────────────────
     Pipeline<CubeVertex, CubeVarying> pipe;
     pipe.cullBackFace = true;
     pipe.depthTestEnabled = true;
@@ -101,13 +107,13 @@ int main(int argc, char *argv[])
     for (int frame = 0; frame < kFrames; ++frame) {
         float time = static_cast<float>(frame) / kFPS;
 
-        // 模型矩阵：绕 Y 轴旋转 + 轻微绕 X 轴倾斜
+        // Model matrix: rotate around Y axis with a slight X-axis tilt
         mat4 model = rotate(time * 1.1f, {0.f, 1.f, 0.f}) * rotate(time * 0.4f, {1.f, 0.f, 0.f});
         mat4 mvp = proj * view * model;
-        // 法线矩阵（model 仅含旋转，逆转置 = 本身）
+        // Normal matrix (model contains only rotation, so inverse-transpose = itself)
         mat4 normalMat = model;
 
-        // ── 顶点着色器 ──────────────────────────────
+        // ── Vertex shader ────────────────────────────
         pipe.setVertexShader([&](const CubeVertex &v) -> CubeVarying {
             vec4 worldPos4 = model * vec4{v.pos.x, v.pos.y, v.pos.z, 1.f};
             vec4 n4 = normalMat * vec4{v.normal.x, v.normal.y, v.normal.z, 0.f};
@@ -115,7 +121,7 @@ int main(int argc, char *argv[])
                     normalize(n4.xyz()), v.color};
         });
 
-        // ── 片元着色器：Blinn-Phong ──────────────────
+        // ── Fragment shader: Blinn-Phong ─────────────
         pipe.setFragmentShader([&](const CubeVarying &f) -> vec4 {
             vec3 N = normalize(f.normal);
             vec3 L = kLightDir;

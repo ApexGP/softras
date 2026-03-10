@@ -1,5 +1,5 @@
-// demo/showcase.cpp — 功能展示 Demo
-// 演示：SH 裁剪 / Mipmap 纹理地板 / Alpha Blending / 线框模式
+// demo/showcase.cpp — Feature showcase demo
+// Demonstrates: SH clipping / mipmap textured floor / alpha blending / wireframe mode
 
 #include <cmath>
 #include <cstdio>
@@ -11,7 +11,7 @@
 #include "../rasterizer/pipeline.h"
 #include "../rasterizer/texture.h"
 
-// ── 通用顶点 / Varying ─────────────────────────
+// ── Shared vertex / varying ────────────────────
 struct Vertex {
     vec3 pos;
     vec3 normal;
@@ -20,14 +20,14 @@ struct Vertex {
 };
 
 struct Varying {
-    vec4 clipPos;  // 必须第一个
+    vec4 clipPos;  // must be first
     vec3 worldPos;
     vec3 normal;
     vec2 uv;
     vec3 color;
 };
 
-// ── 立方体几何 ─────────────────────────────────
+// ── Cube geometry ──────────────────────────────
 static std::vector<Vertex> makeCubeVertices(vec3 col)
 {
     struct Face {
@@ -74,12 +74,13 @@ static std::vector<int> makeCubeIndices()
     return idx;
 }
 
-// ── 棋盘格地板几何 ──────────────────────────────
-// 一块大平面，UV 范围 [0, tileCount]，fragment 着色器采样纹理
+// ── Checkerboard floor geometry ─────────────────
+// A large flat plane with UV range [0, tileCount]; the fragment shader samples the texture.
 static std::vector<Vertex> makeFloorVertices(float halfSize, vec3 col)
 {
     float h = halfSize;
-    float tc = halfSize * 0.5f;  // 6 格铺砌（原 24 格太密，mip 后全糊）
+    float tc =
+        halfSize * 0.5f;  // 6 tiles (24 was too dense; collapses to solid grey after mipmapping)
     return {
         {{-h, 0, -h}, {0, 1, 0}, {0, 0}, col},
         {{-h, 0, h}, {0, 1, 0}, {0, tc}, col},
@@ -93,13 +94,13 @@ static std::vector<int> makeFloorIndices()
     return {0, 1, 2, 0, 2, 3};
 }
 
-// ── 棋盘格纹理（程序生成）──────────────────────
-// 使用 8×8 像素的方块，而非 1×1 交替：
-//   1px 交替在第 1 级 mip（2×2 均值）后直接变均匀灰，完全失去图案
-//   8px 方块在 3 级 mip 后才退化，能在合理视距内清晰显示
+// ── Checkerboard texture (procedurally generated) ──
+// Uses 8×8-pixel blocks instead of 1×1 alternating:
+//   1px alternating collapses to uniform grey after the first mip (2×2 average), losing all pattern.
+//   8px blocks survive 3 mip levels and remain sharp at reasonable view distances.
 static Texture2D makeCheckerTexture(int res)
 {
-    const int sq = res / 8;  // 方块大小：8 格 × 8 格
+    const int sq = res / 8;  // block size: 8 cells × 8 cells
     std::vector<vec4> pixels(static_cast<size_t>(res * res));
     for (int y = 0; y < res; ++y) {
         for (int x = 0; x < res; ++x) {
@@ -122,16 +123,16 @@ int main(int argc, char *argv[])
     const int kFrames = kSeconds * static_cast<int>(kFPS);
     const float kAspect = static_cast<float>(kWidth) / static_cast<float>(kHeight);
 
-    // ── 场景参数 ──────────────────────────────────
+    // ── Scene parameters ──────────────────────────────────
     const vec3 kLightDir = normalize(vec3{1.f, 2.f, 1.5f});
     const vec3 kAmbient = {0.12f, 0.12f, 0.15f};
-    // 近平面 0.4 —— 相机绕近旋转时地板三角形会触发 SH 裁剪
+    // near-plane 0.4 — camera orbiting close triggers SH clipping on large floor triangles
     mat4 proj = perspective(0.9f, kAspect, 0.4f, 60.f);
 
-    // ── 棋盘格纹理（Feature 2: mipmap）──────────
+    // ── Checkerboard texture (Feature 2: mipmap) ──────────
     Texture2D checker = makeCheckerTexture(64);
 
-    // ── 几何数据 ──────────────────────────────────
+    // ── Geometry ──────────────────────────────────
     auto floorVerts = makeFloorVertices(12.f, {1.f, 1.f, 1.f});
     auto floorIdx = makeFloorIndices();
 
@@ -142,7 +143,7 @@ int main(int argc, char *argv[])
     auto greenCubeVerts = makeCubeVertices({0.25f, 0.85f, 0.35f});
     auto yellowCubeVerts = makeCubeVertices({0.95f, 0.9f, 0.2f});
 
-    // ── 管线 ──────────────────────────────────────
+    // ── Pipeline ──────────────────────────────────
     Pipeline<Vertex, Varying> pipe;
 
     Framebuffer fb(kWidth, kHeight);
@@ -150,15 +151,15 @@ int main(int argc, char *argv[])
     for (int frame = 0; frame < kFrames; ++frame) {
         float t = static_cast<float>(frame) / kFPS;
 
-        // 相机轨道：绕原点半径 7，高度 3，慢速旋转
+        // Camera orbit: radius 7 around origin, height 3, slow rotation
         float camAng = t * 0.4f;
         vec3 camPos = {std::sin(camAng) * 7.f, 3.0f, std::cos(camAng) * 7.f};
         mat4 view = lookAt(camPos, {0.f, 0.5f, 0.f}, {0.f, 1.f, 0.f});
 
-        // 帧缓冲清空
+        // Clear framebuffer
         fb.clear(vec4{0.04f, 0.04f, 0.06f, 1.f});
 
-        // ── 设置通用顶点着色器（接受 model 矩阵引用）──
+        // ── Common vertex shader factory (accepts model matrix by ref) ──
         auto makeVS = [&](const mat4 &model, const mat4 &mvp) {
             return [model, mvp, &camPos](const Vertex &v) -> Varying {
                 vec4 wp = model * vec4{v.pos.x, v.pos.y, v.pos.z, 1.f};
@@ -168,7 +169,7 @@ int main(int argc, char *argv[])
             };
         };
 
-        // ── Blinn-Phong 片元着色器（不含纹理）──────
+        // ── Blinn-Phong fragment shader (no texture) ──────
         auto blinnPhongFS = [&](const Varying &f) -> vec4 {
             vec3 N = normalize(f.normal);
             vec3 L = kLightDir;
@@ -183,7 +184,7 @@ int main(int argc, char *argv[])
         };
 
         // ────────────────────────────────────────────
-        // Pass 1：不透明物体（背面剔除，深度写入）
+        // Pass 1: Opaque objects (back-face culling, depth write)
         // ────────────────────────────────────────────
         pipe.cullBackFace = true;
         pipe.depthTestEnabled = true;
@@ -191,19 +192,19 @@ int main(int argc, char *argv[])
         pipe.wireframe = false;
         pipe.blendEnabled = false;
 
-        // -- 地板（Feature 1: SH 裁剪；Feature 2: mipmap LOD）--
+        // -- Floor (Feature 1: SH clipping; Feature 2: mipmap LOD) --
         {
             mat4 model = translate(vec3{0.f, -1.f, 0.f});
             mat4 mvp = proj * view * model;
             pipe.setVertexShader(makeVS(model, mvp));
             pipe.setFragmentShader([&](const Varying &f) -> vec4 {
-                // LOD 基于摄像机距离，远处使用更高 mip 级别
+                // LOD based on camera distance; higher mip for distant fragments
                 float dist = length(camPos - f.worldPos);
-                // LOD 系数 0.05：与 UV 铺砌 6 格 + 8px 方块配套
-                // dist=8 → lod≈0.5（清晰），dist=30 → lod≈1.3（开始模糊）
+                // LOD factor 0.05: tuned to match 6-tile UV + 8px blocks
+                // dist=8 → lod≈0.5 (sharp), dist=30 → lod≈1.3 (starts to blur)
                 float lod = std::log2(dist * 0.05f + 1.f);
                 vec4 tc = checker.sampleLod(f.uv, lod);
-                // 简单漫反射（地板法线固定朝上）
+                // Simple diffuse (floor normal is always up)
                 float diff = std::max(0.f, dot(vec3{0.f, 1.f, 0.f}, kLightDir));
                 vec3 col = tc.xyz() * (kAmbient + diff * vec3{0.75f, 0.75f, 0.72f});
                 col = clamp(col, 0.f, 1.f);
@@ -212,7 +213,7 @@ int main(int argc, char *argv[])
             pipe.draw(floorVerts, floorIdx, fb);
         }
 
-        // -- 左侧静止蓝色立方体 --
+        // -- Left stationary blue cube --
         {
             mat4 model = translate(vec3{-2.8f, -0.2f, -1.f}) * scale(vec3{0.8f, 0.8f, 0.8f});
             mat4 mvp = proj * view * model;
@@ -221,7 +222,7 @@ int main(int argc, char *argv[])
             pipe.draw(blueCubeVerts, cubeIdx, fb);
         }
 
-        // -- 右侧旋转橙色立方体 --
+        // -- Right rotating orange cube --
         {
             mat4 model = translate(vec3{2.5f, -0.2f, 0.f}) * rotate(t * 1.2f, {0.f, 1.f, 0.f}) *
                          scale(vec3{0.75f, 0.75f, 0.75f});
@@ -232,8 +233,8 @@ int main(int argc, char *argv[])
         }
 
         // ────────────────────────────────────────────
-        // Pass 2：半透明绿色立方体（Feature 3: alpha blending）
-        // 关闭深度写入，双面渲染，src-over 合成
+        // Pass 2: Translucent green cube (Feature 3: alpha blending)
+        // Depth write off, double-sided, src-over compositing
         // ────────────────────────────────────────────
         {
             pipe.cullBackFace = false;
@@ -255,7 +256,7 @@ int main(int argc, char *argv[])
         }
 
         // ────────────────────────────────────────────
-        // Pass 3：线框立方体（Feature 4: wireframe）
+        // Pass 3: Wireframe cube (Feature 4: wireframe)
         // ────────────────────────────────────────────
         {
             pipe.cullBackFace = false;
@@ -270,7 +271,7 @@ int main(int argc, char *argv[])
             pipe.setVertexShader(makeVS(model, mvp));
             pipe.setFragmentShader([](const Varying &f) -> vec4 {
                 (void) f;
-                return {0.95f, 0.9f, 0.2f, 1.f};  // 黄色线框
+                return {0.95f, 0.9f, 0.2f, 1.f};  // yellow wireframe
             });
             pipe.draw(yellowCubeVerts, cubeIdx, fb);
         }
