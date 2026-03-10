@@ -141,9 +141,6 @@ int main(int argc, char *argv[])
         pipe.draw(cubeVerts, cubeIndices, fb);
 
         fb.writePPM(stdout);
-        std::fprintf(stderr, "cube frame %d/%d\r", frame + 1, kFrames);
-        std::fflush(stderr);
     }
-    std::fprintf(stderr, "\n");
     return 0;
 }

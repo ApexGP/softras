@@ -4,11 +4,11 @@
 
 ![C++17](https://img.shields.io/badge/C%2B%2B-17-blue?logo=cplusplus&logoColor=white)
 ![Header Only](https://img.shields.io/badge/header--only-4%20files-brightgreen)
-![No Dependencies](https://img.shields.io/badge/dependencies-none-brightgreen)
+![Video](https://img.shields.io/badge/video-libx264-orange)
 ![Platform](https://img.shields.io/badge/platform-linux-lightgrey?logo=linux&logoColor=white)
 
 纯 C++ 实现的 CPU 软件渲染管线，无需 OpenGL / Vulkan / 任何图形库依赖。
-模拟 GPU 可编程管线（顶点着色器 + 片元着色器），通过 pipe 将 PPM 帧直接流式传输给 ffmpeg，磁盘零中间文件。
+模拟 GPU 可编程管线（顶点着色器 + 片元着色器），通过 pipe 将 PPM 帧直接流式传输给内置编码器 `ppm2mp4`，磁盘零中间文件。
 
 ## 功能特性
 
@@ -34,8 +34,10 @@ softras/
 │   ├── quad.cpp        #   全屏四边形过程式着色（1920×1080）
 │   ├── cube.cpp        #   旋转立方体 + Blinn-Phong（960×540）
 │   └── showcase.cpp    #   综合功能展示（960×540）
-│
-├── media/              # MP4 视频（ffmpeg 合成产物，如 quad-3s.mp4）
+├── tools/              # 构建工具
+│   ├── ppm2mp4.cpp     #   PPM 帧流 → H.264/MP4 编码器（libx264）
+│   └── mp4mux.h        #   最小化 ISOBMFF/MP4 封装器（ftyp+mdat+moov）
+├── media/              # MP4 输出（如 quad-3s.mp4）
 └── Makefile
 ```
 
@@ -44,7 +46,32 @@ softras/
 ### 依赖
 
 - C++17（GCC 7+ 或 Clang 5+）
-- ffmpeg（合成视频，可选）
+- `libx264`（供内置工具 `ppm2mp4` 使用）
+
+Ubuntu/Debian 安装：
+
+```sh
+sudo apt install build-essential libx264-dev
+```
+
+### ppm2mp4
+
+`tools/ppm2mp4` 是随 demo 一同构建的独立工具。它从 stdin 读取原始 PPM 帧流，使用 libx264（H.264 baseline profile）编码，并写出自包含的 MP4 文件，无需 ffmpeg。
+
+```
+Usage: ppm2mp4 --fps <N> -o <output.mp4> [--duration <seconds>]
+
+  --fps <N>            帧率（必填）
+  -o <file>            输出 MP4 路径（必填）
+  --duration <secs>    视频时长（秒），内部计算总帧数 = fps × duration，
+                       用于进度显示（可选）
+```
+
+Makefile 将 demo 输出直接 pipe 进 `ppm2mp4`：
+
+```sh
+./build/quad 3 | ./build/ppm2mp4 --fps 60 --duration 3 -o media/quad-3s.mp4
+```
 
 ### 构建并渲染
 
@@ -58,11 +85,11 @@ make clean-media       # 删除 build/ 和 media/
 
 生成：
 
-| 文件                      | 分辨率          | 内容                   |
-| ------------------------- | --------------- | ---------------------- |
-| `media/quad-3s.mp4`       | 1920×1080 60fps | 全屏过程式着色         |
-| `media/cube-3s.mp4`       | 960×540 60fps   | 旋转立方体 Blinn-Phong |
-| `media/showcase-3s.mp4`   | 960×540 60fps   | 功能综合展示           |
+| 文件                    | 分辨率          | 内容                   |
+| ----------------------- | --------------- | ---------------------- |
+| `media/quad-3s.mp4`     | 1920×1080 60fps | 全屏过程式着色         |
+| `media/cube-3s.mp4`     | 960×540 60fps   | 旋转立方体 Blinn-Phong |
+| `media/showcase-3s.mp4` | 960×540 60fps   | 功能综合展示           |
 
 DURATION 变化时目标文件名随之改变（如 `quad-5s.mp4`），Make 自动触发重建；DURATION 不变且源码未改动时跳过渲染和编码。
 

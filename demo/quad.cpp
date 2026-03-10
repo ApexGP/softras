@@ -103,9 +103,6 @@ int main(int argc, char *argv[])
         pipe.draw(verts, indices, fb);
 
         fb.writePPM(stdout);
-        std::fprintf(stderr, "quad frame %d/%d\r", frame + 1, kFrames);
-        std::fflush(stderr);
     }
-    std::fprintf(stderr, "\n");
     return 0;
 }

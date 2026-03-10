@@ -4,12 +4,12 @@
 
 ![C++17](https://img.shields.io/badge/C%2B%2B-17-blue?logo=cplusplus&logoColor=white)
 ![Header Only](https://img.shields.io/badge/header--only-4%20files-brightgreen)
-![No Dependencies](https://img.shields.io/badge/dependencies-none-brightgreen)
+![Video](https://img.shields.io/badge/video-libx264-orange)
 ![Platform](https://img.shields.io/badge/platform-linux-lightgrey?logo=linux&logoColor=white)
 
 A header-only CPU software rendering pipeline written in C++17.
 No OpenGL, Vulkan, or any graphics library required.
-Simulates a GPU programmable pipeline (vertex + fragment shaders), streams PPM frames directly to ffmpeg via pipe — no intermediate files on disk.
+Simulates a GPU programmable pipeline (vertex + fragment shaders), streams PPM frames directly to a built-in encoder (`ppm2mp4`) via pipe — no intermediate files on disk.
 
 ## Features
 
@@ -35,8 +35,10 @@ softras/
 │   ├── quad.cpp        #   Fullscreen procedural shader (1920×1080)
 │   ├── cube.cpp        #   Rotating cube + Blinn-Phong (960×540)
 │   └── showcase.cpp    #   Feature showcase (960×540)
-│
-├── media/              # MP4 videos (ffmpeg output, e.g. quad-3s.mp4)
+├── tools/              # Build tools
+│   ├── ppm2mp4.cpp     #   PPM frame stream → H.264/MP4 encoder (libx264)
+│   └── mp4mux.h        #   Minimal ISOBMFF/MP4 muxer (ftyp+mdat+moov)
+├── media/              # MP4 output (e.g. quad-3s.mp4)
 └── Makefile
 ```
 
@@ -45,7 +47,32 @@ softras/
 ### Requirements
 
 - C++17 compiler (GCC 7+ or Clang 5+)
-- ffmpeg (optional, for video encoding)
+- `libx264` (for `ppm2mp4`, the built-in video encoder)
+
+Install on Ubuntu/Debian:
+
+```sh
+sudo apt install build-essential libx264-dev
+```
+
+### ppm2mp4
+
+`tools/ppm2mp4` is a self-contained tool built alongside the demos. It reads a raw PPM frame stream from stdin, encodes it with libx264 (H.264 baseline profile), and writes a self-contained MP4 file — no ffmpeg required.
+
+```
+Usage: ppm2mp4 --fps <N> -o <output.mp4> [--duration <seconds>]
+
+  --fps <N>           Frames per second (required)
+  -o <file>           Output MP4 path (required)
+  --duration <secs>   Video duration; used to compute total frames for
+                      progress display (optional, total = fps × duration)
+```
+
+The Makefile pipes demo output directly into `ppm2mp4`:
+
+```sh
+./build/quad 3 | ./build/ppm2mp4 --fps 60 --duration 3 -o media/quad-3s.mp4
+```
 
 ### Build & Render
 
@@ -59,11 +86,11 @@ make clean-media       # Remove build/ and media/
 
 Output:
 
-| File                      | Resolution      | Content                     |
-| ------------------------- | --------------- | --------------------------- |
-| `media/quad-3s.mp4`       | 1920×1080 60fps | Fullscreen procedural shader |
-| `media/cube-3s.mp4`       | 960×540 60fps   | Rotating cube, Blinn-Phong  |
-| `media/showcase-3s.mp4`   | 960×540 60fps   | Feature showcase            |
+| File                    | Resolution      | Content                      |
+| ----------------------- | --------------- | ---------------------------- |
+| `media/quad-3s.mp4`     | 1920×1080 60fps | Fullscreen procedural shader |
+| `media/cube-3s.mp4`     | 960×540 60fps   | Rotating cube, Blinn-Phong   |
+| `media/showcase-3s.mp4` | 960×540 60fps   | Feature showcase             |
 
 When `DURATION` changes, the target filename changes (e.g. `quad-5s.mp4`) so Make automatically rebuilds.
 When `DURATION` and source files are unchanged, rendering and encoding are skipped.
